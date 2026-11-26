@@ -17,9 +17,9 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/whatsapp-backup-tools/"><img src="https://img.shields.io/pypi/v/whatsapp-backup-tools" alt="PyPI Version"></a>
-  <a href="https://github.com/auanasgheps/whatsapp-backup-tools/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/auanasgheps/whatsapp-backup-tools/tests.yml?branch=master&label=tests" alt="Tests Status"></a>
-  <a href="https://github.com/auanasgheps/whatsapp-backup-tools/tree/master/tests"><img src="https://img.shields.io/badge/tests-1000%2B%20passed-brightgreen" alt="Tests Count"></a>
+  <a href="https://pypi.org/project/whatsapp-backup-tools/"><img src="https://img.shields.io/pypi/v/whatsapp-backup-tools?label=upstream%20PyPI" alt="Upstream PyPI version"></a>
+  <a href="https://github.com/TerminalTitanium/whatsapp-backup-tools/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/TerminalTitanium/whatsapp-backup-tools/tests.yml?label=tests" alt="Tests Status"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/tests-1000%2B%20passed-brightgreen" alt="Tests Count"></a>
   <a href="https://pypi.org/project/whatsapp-backup-tools/"><img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python Version"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Code style: ruff"></a>
   <a href="https://github.com/auanasgheps/whatsapp-backup-tools/blob/master/LICENSE"><img src="https://img.shields.io/github/license/auanasgheps/whatsapp-backup-tools" alt="License"></a>
@@ -31,14 +31,20 @@
 
 > **⚡️ 100% Local & Private** — No cloud accounts, no telemetry, no data leaves your machine. Full native support for **Android & iOS** backups on Windows, macOS, and Linux.
 
-## Android snapshots in this fork
+## Account archives in this fork
 
-The fork adds USB capture for multiple Android accounts, account-specific archive imports, stable media paths and snapshot-based contact and avatar history. Start with the [operator guide](docs/android-archive-quickstart.md) or the [USB capture reference](docs/archiver/android-snapshots.md).
+WhatsApp Backup Tools keeps source snapshots by device and working archives by WhatsApp account. Each account retains its chat history, stable media paths, contact names and avatars across imports.
+
+| Source | Available today | Planned for the snapshot workflow |
+| --- | --- | --- |
+| Android phone | Capture one or more accounts over USB and import their snapshots. [Operator guide](docs/android-archive-quickstart.md) | |
+| WhatsApp for Mac | Add local avatars and recover missing attachments. [Avatars](docs/mac-avatar-map.md) · [Media recovery](docs/android-media-recovery.md) | Capture chats directly from the Mac app. |
+| iPhone | Read a local iPhone backup with the existing archiver. [iPhone guide](docs/archiver/setup-ios.md) | Capture and import iPhone snapshots into account archives. |
 
 ## Overview
 
 WhatsApp Backup Tools is a suite to archive and access your WhatsApp data.
-Consists of two complementary programs:
+Its two core programs handle archiving and viewing. The fork also provides `wab-capture` and `wab-import` for the snapshot workflow described above.
 
 - **wab-archiver** (WhatsApp Backup Archiver) organises your WhatsApp media into a structured folder hierarchy using metadata from the WhatsApp database. Instead of an unstructured dump, you get a browsable archive sorted by contact or group, year, and direction (Sent/Received), with original message timestamps preserved.
 - **wab-viewer** (WhatsApp Backup Viewer) lets you browse and search your archived chats through a local web UI, replicating WhatsApp Web. 
@@ -176,33 +182,17 @@ Everything is processed **100% locally on your computer** — no data leaves you
 
 ### Step 1: Install the Tool
 
-Ensure **Python 3.11+** is installed, then install from PyPI:
+Install this fork from its GitHub checkout using Python 3.11+ in a virtual environment. The current snapshot workflow is available in [PR #1](https://github.com/TerminalTitanium/whatsapp-backup-tools/pull/1).
 
 ```bash
-pip install whatsapp-backup-tools
+git clone https://github.com/TerminalTitanium/whatsapp-backup-tools.git
+cd whatsapp-backup-tools
+git fetch origin refs/pull/1/head
+git switch --detach FETCH_HEAD
+python -m pip install .
 ```
 
-> 💡 **Windows users:** If `pip` is not recognized, run `py -m pip install whatsapp-backup-tools` instead.
-
-<details>
-<summary><b>Alternative installation methods (offline wheel, clone, or running without pip)</b></summary>
-
-- **Pre-built wheel (.whl):** Download from [GitHub Releases](https://github.com/auanasgheps/whatsapp-backup-tools/releases) and run:
-  ```bash
-  pip install whatsapp_backup_tools-x.xx-py3-none-any.whl
-  ```
-- **Local clone:**
-  ```bash
-  git clone https://github.com/auanasgheps/whatsapp-backup-tools.git
-  cd whatsapp-backup-tools
-  pip install .
-  ```
-- **Manual execution without pip:**
-  ```bash
-  python -m wab_archiver --help
-  python -m wab_viewer --help
-  ```
-</details>
+The fetch and switch commands select the version under review. When installing from a checkout that already contains these changes, run just the last command. For a Mac walkthrough including virtual environment setup, see the [operator guide](docs/android-archive-quickstart.md). The [upstream project](https://github.com/auanasgheps/whatsapp-backup-tools) also distributes its releases on [PyPI](https://pypi.org/project/whatsapp-backup-tools/).
 
 ---
 

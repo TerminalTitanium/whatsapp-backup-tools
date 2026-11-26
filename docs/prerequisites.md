@@ -16,41 +16,24 @@ Everything you need to get started with **WhatsApp Backup Tools (`whatsapp-backu
 
 ## 2. Installation
 
-Install directly via `pip` from PyPI:
+Follow the [fork installation steps](../README.md#step-1-install-the-tool) to select the checkout for this version. In its root directory, install with `python -m pip install .` (on Windows you can use `py -m pip install .`).
 
-```bash
-pip install whatsapp-backup-tools
-```
+The installed commands are:
 
-Or clone the repository and install locally:
+- **`wab-archiver`** reads Android and iPhone backups and organizes their media.
+- **`wab-viewer`** opens the local archive viewer.
+- **`wab-capture`** takes per-account Android USB snapshots on macOS or Linux.
+- **`wab-import`** imports those snapshots into a working archive for each account on macOS or Linux.
 
-```bash
-git clone https://github.com/auanasgheps/whatsapp-backup-tools.git
-cd whatsapp-backup-tools
-pip install .
-```
-
-You can also download pre-built `.whl` packages from [GitHub Releases](https://github.com/auanasgheps/whatsapp-backup-tools/releases) and install them:
-
-```bash
-pip install whatsapp_backup_tools-x.xx-py3-none-any.whl
-```
-
-> 💡 **Windows users:** If `pip` is not recognized, run `py -m pip install whatsapp-backup-tools` (or `py -m pip install .` if installing from a local clone) instead.
-
-This registers the two unified CLI commands:
-- **`wab-archiver`**: Preserves and organizes media into a structured directory tree.
-- **`wab-viewer`**: Launches the local WebUI chat viewer.
+If you have a wheel built from the fork, you can install it with `python -m pip install /path/to/file.whl`. For offline installation, keep the required dependency wheels alongside it and add `--no-index --find-links /path/to/wheels`. The [upstream project on PyPI](https://pypi.org/project/whatsapp-backup-tools/) and its [GitHub releases](https://github.com/auanasgheps/whatsapp-backup-tools/releases) provide the original distribution.
 
 All required core packages (`flask`, `wa-crypt-tools`, `iphone-backup-decrypt`, `cryptography`) are automatically installed.
 
 ### Manual Execution (without pip)
 
-Alternatively, clone the repository and run the tools directly using Python without installing the package:
+From the same checkout, you can run the tools directly using Python:
 
 ```bash
-git clone https://github.com/auanasgheps/whatsapp-backup-tools.git
-cd whatsapp-backup-tools
 python -m wab_archiver --help
 python -m wab_viewer --help
 ```

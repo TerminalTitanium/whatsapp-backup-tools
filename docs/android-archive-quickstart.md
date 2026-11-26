@@ -1,14 +1,16 @@
-# Накопительный архив Android на Mac
+# Снимки Android и просмотр архива на Mac
 
-В форке две отдельные команды. `wab-capture` снимает данные телефона в `sources/<устройство>/`; `wab-import` обновляет рабочую папку `wab/<UUID аккаунта>/`. Штатный `wab-viewer` открывает эту папку. Подробности формата приведены в [проектном документе](WAB-Android-Archive-Design.md).
+Это инструкция для Android-телефона, подключённого к Mac. `wab-capture` снимает данные телефона в `sources/<устройство>/`; `wab-import` обновляет рабочую папку `wab/<UUID аккаунта>/`. Штатный `wab-viewer` открывает эту папку. Подробности формата приведены в [проектном документе](WAB-Android-Archive-Design.md).
 
 ## Установить версию форка отдельно
 
 Нужны Git, Python 3.11+ и Android SDK Platform Tools с командой `adb`. В терминале Mac создайте отдельный checkout и окружение для форка. Пока изменения находятся в PR, используйте его ветку.
 
 ```sh
-git clone --branch feature/android-account-archives https://github.com/TerminalTitanium/whatsapp-backup-tools.git wab-android-fork
-cd wab-android-fork
+git clone https://github.com/TerminalTitanium/whatsapp-backup-tools.git
+cd whatsapp-backup-tools
+git fetch origin refs/pull/1/head
+git switch --detach FETCH_HEAD
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .
