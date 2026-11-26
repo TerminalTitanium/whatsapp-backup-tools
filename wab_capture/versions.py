@@ -86,22 +86,30 @@ def bind_snapshot(database, archive, view, manifest, logger):
             return supplied, None, None
         reference = native_path or supplied_path
         current_entry = current.get(reference)
-        candidate = view / supplied_path
-        actual = observed_hash(candidate)
-        if current_entry and supplied_path == reference and actual != current_entry["sha256"]:
-            raise ValueError(f"Snapshot media view failed its checksum: {reference!r}")
-        verified = actual and (
-            expected == actual
-            or (
-                not expected
-                and current_entry
-                and current_entry["sha256"] == actual
-                and Path(current_entry["path"]).parts[0] == "media"
-                and not (known_hashes[native] - {actual})
+        if current_entry:
+            candidate = stored_file(current_entry["path"])
+            actual = observed_hash(candidate)
+            if (
+                actual != current_entry["sha256"]
+                or candidate.stat().st_size != current_entry["size"]
+            ):
+                raise ValueError(f"Snapshot media object failed its checksum: {reference!r}")
+            # Older manifests retain their original-path proof. A new capture's
+            # explicit false flag records known reuse, even after reverting bytes.
+            unique = current_entry.get(
+                "native_path_unique",
+                current_entry["path"] == Path("media", *reference.split("/")[1:]).as_posix(),
             )
-        )
-        if verified and candidate.stat().st_size:
-            return version_path(reference, actual), candidate, actual
+            if candidate.stat().st_size and (
+                expected == actual
+                or (not expected and unique is True and not (known_hashes[native] - {actual}))
+            ):
+                return version_path(reference, actual), candidate, actual
+        # The private temporary tree contains only content-addressed Mac repairs.
+        if expected:
+            candidate = view / supplied_path
+            if observed_hash(candidate) == expected and candidate.stat().st_size:
+                return version_path(reference, expected), candidate, expected
         if expected and native_path:
             # A reused name can have two different bytes in the same snapshot.
             # A native plaintext hash permits reading either retained version.
@@ -165,4 +173,7 @@ def bind_snapshot(database, archive, view, manifest, logger):
             )
         for (table, pk), effective in updates.items():
             db.execute(f"UPDATE {table} SET file_path=? WHERE rowid=?", (effective or None, pk))
+    # Cover other upstream source lookups (e.g. a thumbnail) that are not media rows.
+    for path, entry in current.items():
+        resolved.setdefault(path, stored_file(entry["path"]))
     return resolved

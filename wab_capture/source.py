@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -87,18 +88,63 @@ def _ensure_inside(base, path):
         raise ValueError(f"Unsafe destination beneath {base.name}.")
 
 
+class MediaPaths:
+    """Reserve one physical spelling and kind per portable path component."""
+
+    def __init__(self, root: Path):
+        self.slots = {}
+        self.existing_files = set()
+        for directory, dirs, files in os.walk(root):
+            parent = Path(directory).relative_to(root)
+            self.existing_files.update(parent / name for name in files)
+            for names, is_directory in ((dirs, True), (files, False)):
+                for name in names:
+                    path = parent / name
+                    key = self.key(path)
+                    entry = (path, is_directory and not (root / path).is_symlink())
+                    if key in self.slots and self.slots[key] != entry:
+                        # A case-sensitive store from an earlier release may contain
+                        # both physical spellings. Preserve those old files, but keep
+                        # all new observations of this ambiguous path in versions.
+                        self.slots[key] = None
+                    else:
+                        self.slots[key] = entry
+
+    @staticmethod
+    def key(path):
+        return unicodedata.normalize("NFC", path.as_posix().casefold())
+
+    def reserve(self, relative):
+        """Return False if any component would alias another file or directory."""
+        wanted = [(p, True) for p in relative.parents if p != Path(".")]
+        wanted.append((relative, False))
+        for entry in wanted:
+            key = self.key(entry[0])
+            if key in self.slots and self.slots[key] != entry:
+                return False
+        for entry in wanted:
+            self.slots[self.key(entry[0])] = entry
+        return True
+
+
 def sync_media(usb, device, stage):
     """Keep the first content at each native path; address later versions by hash."""
     media = {}
     counts = {"added": 0, "skipped": 0, "conflicts": 0}
-    for entry in usb.media():
+    paths = MediaPaths(device / "media")
+    for entry in sorted(usb.media(), key=lambda record: record.path):
         relative = _relative(entry.path, "Media")
         if not re.fullmatch(r"[a-f0-9]{64}", entry.sha256) or entry.path in media:
             raise ValueError("Invalid or repeated media inventory record.")
         original = device / "media" / relative
-        _ensure_inside(device / "media", original)
+        usable = paths.reserve(relative)
+        original_matches = True
+        if usable or relative in paths.existing_files:
+            _ensure_inside(device / "media", original)
+            if relative in paths.existing_files:
+                original_matches = digest(original) == entry.sha256
         target = original
-        if original.exists() and digest(original) != entry.sha256:
+        if not usable or not original_matches:
             counts["conflicts"] += 1
             target = device / "media-versions" / entry.sha256[:2] / entry.sha256
             _ensure_inside(device, target)
@@ -120,6 +166,7 @@ def sync_media(usb, device, stage):
             "path": target.relative_to(device).as_posix(),
             "size": entry.size,
             "sha256": entry.sha256,
+            "native_path_unique": original_matches,
         }
     return media, counts
 
@@ -135,20 +182,22 @@ def previous_snapshots(device):
     return snapshots
 
 
-def retained_candidates(history, account, observed_media):
-    """Missing on this phone now; up to one historical version per native path.
-
-    These are reconciliation candidates, not assertions about a message in a
-    different native database. A consumer must check the message's own hash.
-    """
+def merge_media_history(history, account, observed_media):
+    """Mark exact-path reuse device-wide and collect absent candidates for this account."""
     candidates = {}
     ambiguous = set()
     for owner, _, _, snapshot in history:
-        if owner != account:
-            continue
         old = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
         for path, record in old["media"].items():
-            if path in observed_media or path in ambiguous:
+            current = observed_media.get(path)
+            if current:
+                if (
+                    current["sha256"] != record["sha256"]
+                    or record.get("native_path_unique") is False
+                ):
+                    current["native_path_unique"] = False
+                continue
+            if owner != account or path in ambiguous:
                 continue
             previous = candidates.get(path)
             if previous and previous["sha256"] != record["sha256"]:
@@ -235,6 +284,7 @@ def capture_account(
     media, counts = sync_media(usb, device, stage)
     if usb.databases() != expected_files:
         raise ValueError("The phone's backup changed during capture. Retry this account.")
+    retained = merge_media_history(history, account, media)
     manifest = {
         "schema_version": 1,
         "snapshot_id": snapshot_id,
@@ -245,7 +295,7 @@ def capture_account(
         "primary_database": databases[0]["name"],
         "databases": databases,
         "media": media,
-        "retained_media": retained_candidates(history, account, media),
+        "retained_media": retained,
         "contacts": contact_file,
         "contacts_sha256": digest(stage / contact_file) if contact_file else None,
         "contact_rows": contact_rows,

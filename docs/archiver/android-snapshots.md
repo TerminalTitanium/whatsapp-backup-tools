@@ -57,6 +57,11 @@ previous local address book remains available.
 
 - `sources/<device>/media/` holds the first content observed at each Android
   media path. Distinct bytes found later at that path go into `media-versions/`.
+  This store also keeps Android names that collide on a Mac volume, including
+  case-only and Unicode spelling differences. Each snapshot records the exact
+  Android name and the location of the corresponding bytes. Its
+  `native_path_unique` flag records whether all known captures on the device
+  agree on the bytes stored under that exact Android spelling.
   Versions referred to by previous snapshots remain available.
 - `snapshots/<UTC>_<account-uuid>/` contains the full encrypted database and
   its active ordered increments under `databases/`, the authenticated `key.txt`,

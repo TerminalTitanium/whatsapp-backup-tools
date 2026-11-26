@@ -394,3 +394,71 @@ def test_concurrent_import_and_corrupt_snapshot_preserve_existing_archive(tmp_pa
         p.relative_to(target): p.read_bytes() for p in (target / "Groups").rglob("*.jpg")
     } == original_assets
     assert not list((phone.store / "wab").glob(".import-*"))
+
+
+def test_two_device_sources_preserve_case_distinct_media_in_one_account(tmp_path):
+    from wab_viewer.main import create_app
+
+    second_tmp = tmp_path / "second-device"
+    second_tmp.mkdir()
+    other = Phone(second_tmp)
+    upper = other.phone / MEDIA / IMAGE.upper()
+    if upper.exists():
+        pytest.skip("The simulated Android source filesystem folds case in filenames")
+    upper.write_bytes(SECOND)
+    with sqlite3.connect(other.db) as db:
+        db.execute("ALTER TABLE message_media ADD COLUMN file_hash BLOB")
+        db.execute("UPDATE message_media SET file_hash=?", (hashlib.sha256(FIRST).digest(),))
+        db.execute("INSERT INTO message VALUES (2,1,0,1,1700000050000,'other photo',1,'k2')")
+        db.execute(
+            "INSERT INTO message_media VALUES (2,2,1,?,?,'image/jpeg',NULL,?)",
+            (f"{MEDIA}/{upper.name}", upper.name, hashlib.sha256(SECOND).digest()),
+        )
+    other.encrypt()
+
+    first_device = Phone(tmp_path)
+    first_snapshot = first_device.capture()
+    invoke_import(first_snapshot, first_device)
+    (other.bin / "adb").write_text(ADB.replace("TEST-DEVICE", "TEST-DEVICE-2"))
+    run_module(
+        "wab_capture",
+        [
+            "--root",
+            first_device.store,
+            "--device",
+            "other-android",
+            "--account",
+            ACCOUNT_A,
+            "--key-file",
+            other.key,
+            "--phone-root",
+            other.phone,
+        ],
+        other.env,
+        stdin=f"\n{ACCOUNT_A}\n",
+    )
+    [manifest_path] = (first_device.store / "sources" / "other-android" / "snapshots").glob(
+        "*/manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assert (
+        manifest["device_id"]
+        != json.loads((first_snapshot / "manifest.json").read_text())["device_id"]
+    )
+    assert set(manifest["media"]) == {f"{MEDIA}/{IMAGE}", f"{MEDIA}/{upper.name}"}
+    invoke_import(manifest_path.parent, other)
+    archive = first_device.store / "wab" / ACCOUNT_A
+    with sqlite3.connect(archive / "Whatsapp Databases" / "msgstore.db") as db:
+        db.execute("ATTACH DATABASE ? AS archive", (str(archive / ".wa_media_archiver.db"),))
+        messages = db.execute(
+            "SELECT media.message_row_id, copies.archive_path FROM message_media media "
+            "JOIN archive.archive_copies copies ON copies.original_path=media.file_path "
+            "ORDER BY media.message_row_id"
+        ).fetchall()
+    assert [mid for mid, _ in messages] == [1, 2]
+    client = create_app(archive).test_client()
+    for (_, path), expected in zip(messages, [FIRST, SECOND], strict=True):
+        response = client.get(f"/media/{path}")
+        assert response.status_code == 200
+        assert response.data == expected
+        response.close()

@@ -37,18 +37,19 @@ def verified(root, name, entry):
 
 
 def media_view(mapping, device, view):
-    """Present exactly the capture's version of each file at its Android path."""
-    (view / "Media").mkdir(parents=True)
+    """Verify all captured objects. Reserve the temporary tree for recovered files.
+
+    Android path spellings are exact manifest keys. Exposing them as native
+    symlinks would collapse case and Unicode variants on common macOS volumes.
+    """
+    (view / "Media" / "WhatsApp Images").mkdir(parents=True)
     for name, item in mapping.items():
         parts = name.split("/")
-        if parts[0] != "Media" or any(p in {"", ".", ".."} for p in parts):
+        if len(parts) < 2 or parts[0] != "Media" or any(p in {"", ".", ".."} for p in parts):
             raise ValueError(f"Invalid snapshot media name: {name!r}")
         if Path(item["path"]).parts[:1] not in {("media",), ("media-versions",)}:
             raise ValueError("Snapshot media must reside in a device media store.")
-        original = verified(device, item["path"], item)
-        dest = view / name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.symlink_to(original)
+        verified(device, item["path"], item)
 
 
 def snapshot_material(snap, manifest):

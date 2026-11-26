@@ -286,3 +286,85 @@ def test_sqlite_fingerprint_stable_with_raw_and_compressed_payloads(tmp_path):
     path.write_bytes(Database15().encrypt(key, Props(), zlib.compress(b"not a database")))
     with pytest.raises(ValueError, match="SQLite"):
         verify_key(path, KEY, fingerprint=True)
+
+
+@pytest.mark.parametrize(
+    "first,next_name",
+    [
+        ("A.jpg", "a.jpg"),
+        ("A", "a/nested.jpg"),
+        ("A/nested.jpg", "a"),
+        ("é.jpg", "e\u0301.jpg"),
+        ("P/é.jpg", "p/e\u0301.jpg"),
+    ],
+)
+def test_portable_source_media_collisions_across_captures(tmp_path, monkeypatch, first, next_name):
+    phone = Phone()
+    phone.files[f"Media/{first}"] = b"initial"
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    del phone.files[f"Media/{first}"]
+    phone.files[f"Media/{next_name}"] = b"other bytes"
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    one, two, three = get_manifests(tmp_path)
+    dev = one.parents[2]
+    original = read_file(one)["media"][f"Media/{first}"]["path"]
+    variant = read_file(two)["media"][f"Media/{next_name}"]["path"]
+    assert original.startswith("media/")
+    assert variant.startswith("media-versions/")
+    assert (dev / original).read_bytes() == b"initial"
+    assert (dev / variant).read_bytes() == b"other bytes"
+    assert read_file(three)["media"][f"Media/{next_name}"]["path"] == variant
+    assert read_file(three)["media"][f"Media/{next_name}"]["native_path_unique"] is True
+    assert phone.pulls.count(f"Media/{next_name}") == 1
+    assert sum(p.is_file() for p in (dev / "media-versions").rglob("*")) == 1
+
+
+def test_colliding_names_during_initial_capture_keep_both_exact_files(tmp_path, monkeypatch):
+    phone = Phone()
+    phone.files["Media/photo"] = b"lower"
+    phone.files["Media/PHOTO/picture"] = b"upper nested"
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    [snap] = get_manifests(tmp_path)
+    mapping = read_file(snap)["media"]
+    for name in ("Media/photo", "Media/PHOTO/picture"):
+        assert (snap.parents[2] / mapping[name]["path"]).read_bytes() == phone.files[name]
+    assert mapping["Media/photo"]["path"].startswith("media-versions/")
+
+
+def test_layout_collision_followed_by_exact_path_reuse_remembers_all_versions(
+    tmp_path, monkeypatch
+):
+    phone = Phone()
+    phone.files["Media/IMG.jpg"] = b"original"
+    phone.files["Media/img.jpg"] = b"lower"
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    for data in (b"lower replacement", b"lower"):
+        phone.files["Media/img.jpg"] = data
+        run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    one, two, three = (read_file(f)["media"] for f in get_manifests(tmp_path))
+    assert all(record["native_path_unique"] for record in one.values())
+    assert two["Media/IMG.jpg"]["native_path_unique"] is True
+    assert two["Media/img.jpg"]["native_path_unique"] is False
+    assert three["Media/img.jpg"]["native_path_unique"] is False
+
+
+def test_preexisting_legacy_aliases_preserve_old_files(tmp_path, monkeypatch):
+    phone = Phone()
+    old = tmp_path / "sources/test-device/media"
+    old.mkdir(parents=True)
+    (old / "A").write_bytes(b"old A")
+    if (old / "a").exists():
+        pytest.skip("Simulates an existing store created on a case-sensitive disk.")
+    (old / "a").write_bytes(b"old a")
+    phone.files.update({"Media/a": b"old a", "Media/A": b"new A"})
+    run_session(tmp_path, monkeypatch, phone, [UUID_A])
+    [snap] = get_manifests(tmp_path)
+    mapping = read_file(snap)["media"]
+    assert (old / "A").read_bytes() == b"old A" and (old / "a").read_bytes() == b"old a"
+    for name in ("a", "A"):
+        record = mapping[f"Media/{name}"]
+        assert record["path"].startswith("media-versions/")
+        assert (old.parent / record["path"]).read_bytes() == phone.files[f"Media/{name}"]
+    assert mapping["Media/a"]["native_path_unique"] is True
+    assert mapping["Media/A"]["native_path_unique"] is False

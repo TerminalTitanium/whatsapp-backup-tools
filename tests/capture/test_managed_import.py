@@ -281,7 +281,8 @@ def test_media_view_pins_versions_and_detects_content_change(tree, tmp_path):
     mapping = {"Media/Objects/one": {"path": "media-versions/stored", **file_record(source)}}
     view = tmp_path / "first"
     importer.media_view(mapping, device, view)
-    assert (view / "Media/Objects/one").samefile(source)
+    assert (view / "Media").is_dir()
+    assert not (view / "Media/Objects/one").exists()
     source.write_bytes(b"changed")
     with pytest.raises(ValueError, match="checksum mismatch"):
         importer.media_view(mapping, device, tmp_path / "second")
