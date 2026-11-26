@@ -31,6 +31,10 @@
 
 > **⚡️ 100% Local & Private** — No cloud accounts, no telemetry, no data leaves your machine. Full native support for **Android & iOS** backups on Windows, macOS, and Linux.
 
+## Android snapshots in this fork
+
+The fork adds USB capture for multiple Android accounts, account-specific archive imports, stable media paths and snapshot-based contact and avatar history. Start with the [operator guide](docs/android-archive-quickstart.md) or the [USB capture reference](docs/archiver/android-snapshots.md).
+
 ## Overview
 
 WhatsApp Backup Tools is a suite to archive and access your WhatsApp data.
@@ -320,7 +324,7 @@ See [docs/prerequisites.md](docs/prerequisites.md) for full setup instructions: 
 - **Recent Android link previews and media thumbnails may be missing until the next full backup.** To save space and mobile data, WhatsApp's daily incremental backups only save message text and details, leaving out image previews. Once WhatsApp completes its next full base backup on your phone (typically created every 5 to 7 days, or when manually triggering a backup in WhatsApp settings), those missing previews will appear in your archive after running the archiver again. Because this tool runs 100% locally and offline, it never connects to WhatsApp servers to download missing previews.
 ### Viewer
 
-- **Profile pictures are not displayed**: Local WhatsApp backups do not store contact avatars (requires live WhatsApp connection or unbacked-up sandbox databases).
+- **Native backups omit contact profile images**: The Android snapshot workflow can attach verified local images from a linked Mac. See [Mac avatars](docs/mac-avatar-map.md).
 - **Unsaved contact push names on Android require root**: Friendly push names for unsaved numbers reside in private application storage (`wa.db`), excluded from backups. Unsaved numbers display their international phone number.
 - See [viewer known limitations](docs/viewer/index.md#known-limitations) for full technical details on receipts and incremental preview caches.
 

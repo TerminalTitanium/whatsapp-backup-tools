@@ -108,9 +108,7 @@
 
     const avatar = document.createElement('div');
     avatar.className = 'chat-item-avatar';
-    const avatarKey = chat.phone_number || chat.id || chat.display_name;
-    avatar.style.backgroundColor = getAvatarColor(avatarKey);
-    avatar.textContent = getInitials(chat.display_name);
+    renderChatAvatar(avatar, chat);
     avatar.setAttribute('aria-hidden', 'true');
     el.appendChild(avatar);
 
@@ -462,9 +460,7 @@
 
     const avatarEl = document.getElementById('chat-header-avatar');
     if (avatarEl) {
-      const avatarKey = chat.phone_number || chat.id || chat.display_name;
-      avatarEl.style.backgroundColor = getAvatarColor(avatarKey);
-      avatarEl.textContent = getInitials(chat.display_name);
+      renderChatAvatar(avatarEl, chat);
     }
 
     const subtitleEl = document.getElementById('chat-subtitle');
@@ -476,7 +472,7 @@
         }
         subtitleEl.innerHTML = subHtml;
       } else {
-        const formattedPhone = formatPhoneNumber(chat.phone_number || chat.id);
+        const formattedPhone = formatPhoneNumber(chat.phone_number);
         let subHtml = formattedPhone ? esc(formattedPhone) : '';
         if (chat.is_preserved_only) {
           subHtml += (subHtml ? ' ' : '') + '<span class="chat-preserved-tag" title="Preserved from backup • Chat deleted on device">Preserved</span>';

@@ -5,6 +5,12 @@
   let _callsHasMore = false;
   let _callsLoading = false;
 
+  function renderCallAvatar(element, call, label) {
+    const match = call.caller_phone && allChats.find(chat => chat.type === 'contact'
+      && chat.phone_number && chat.phone_number.replace(/^\+/, '') === call.caller_phone.replace(/^\+/, ''));
+    renderChatAvatar(element, match || {phone_number: call.caller_phone, display_name: label});
+  }
+
   function filterCallsList(searchQuery) {
     const list = document.getElementById('chat-list');
     if (!list) return;
@@ -193,9 +199,7 @@
 
     const avatar = document.createElement('div');
     avatar.className = 'call-item-avatar';
-    const avatarKey = call.caller_phone || call.caller_name || 'Call';
-    avatar.style.backgroundColor = getAvatarColor(avatarKey);
-    avatar.textContent = getInitials(callerName);
+    renderCallAvatar(avatar, call, callerName);
     el.appendChild(avatar);
 
     const body = document.createElement('div');
@@ -295,8 +299,7 @@
 
     const avatarEl = document.getElementById('call-inspect-avatar');
     if (avatarEl) {
-      avatarEl.textContent = getInitials(call.caller_name || 'Call');
-      avatarEl.style.backgroundColor = getAvatarColor(call.caller_phone || call.caller_name || 'Call');
+      renderCallAvatar(avatarEl, call, call.caller_name || 'Call');
     }
 
     const nameEl = document.getElementById('call-inspect-name');

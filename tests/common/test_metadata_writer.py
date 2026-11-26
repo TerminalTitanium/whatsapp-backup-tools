@@ -476,9 +476,13 @@ def test_archive_db_exif_stamped_column_migration(tmp_path):
     # Test helper methods
     cur = migrated_conn.cursor()
     cur.execute("INSERT INTO files VALUES ('p1', X'11', 10)")
-    cur.execute("INSERT INTO archive_copies VALUES ('p1', 'rel1.jpg', 0, 1000, 0)")
+    cur.execute(
+        "INSERT INTO archive_copies (original_path, archive_path, is_hardlink, timestamp_ms, exif_stamped) VALUES ('p1', 'rel1.jpg', 0, 1000, 0)"
+    )
     cur.execute("INSERT INTO files VALUES ('p2', X'22', 10)")
-    cur.execute("INSERT INTO archive_copies VALUES ('p2', 'rel2.jpg', 1, 2000, 0)")
+    cur.execute(
+        "INSERT INTO archive_copies (original_path, archive_path, is_hardlink, timestamp_ms, exif_stamped) VALUES ('p2', 'rel2.jpg', 1, 2000, 0)"
+    )
     migrated_conn.commit()
 
     pending = arc.get_pending_metadata_copies(migrated_conn)

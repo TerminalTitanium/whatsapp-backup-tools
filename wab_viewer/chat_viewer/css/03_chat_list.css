@@ -97,3 +97,10 @@
     #search-results.has-results { display: block; }
     #search-results-header { padding: 8px 16px 4px; font-size: 11px; color: var(--text-muted); }
 
+
+    .local-profile-photo {
+      width: 100%;
+      height: 100%;
+      border-radius: inherit;
+      object-fit: cover;
+    }

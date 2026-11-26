@@ -22,42 +22,15 @@ logger = logging.getLogger(__name__)
 class TestKeyResolution:
     """Tests for resolve_e2e_key across various key file formats."""
 
-    @pytest.fixture(autouse=True)
-    def mock_key_factory(self):
-        class MockKeyFactory:
-            @staticmethod
-            def new(candidate):
-                if isinstance(candidate, str) and os.path.isfile(candidate):
-                    try:
-                        data = Path(candidate).read_bytes()
-                        if len(data) == 32:
-                            return "MOCK_KEY_32"
-                    except OSError:
-                        pass
-                if isinstance(candidate, (bytes, str)) and len(candidate) in (32, 64):
-                    return f"MOCK_KEY_{len(candidate)}"
-                return None
-
-        mock_module = MagicMock()
-        mock_module.KeyFactory = MockKeyFactory
-        with patch.dict(
-            "sys.modules",
-            {
-                "wa_crypt_tools": MagicMock(),
-                "wa_crypt_tools.lib": MagicMock(),
-                "wa_crypt_tools.lib.key": MagicMock(),
-                "wa_crypt_tools.lib.key.keyfactory": mock_module,
-            },
-        ):
-            yield
-
     def test_resolve_key_from_binary_file(self, tmp_path) -> None:
         key_bytes = b"\x01\x23\x45\x67" * 8  # 32 bytes
         key_file = tmp_path / "msgstore.key"
-        key_file.write_bytes(key_bytes)
+        from wa_crypt_tools.lib.key.key15 import Key15
+
+        Key15(key=key_bytes).file_dump(key_file)
 
         resolved = increment_merger.resolve_e2e_key(str(key_file), logger)
-        assert resolved == "MOCK_KEY_32"
+        assert resolved.get_root() == key_bytes
 
     def test_resolve_key_from_hex_text_file(self, tmp_path) -> None:
         hex_str = "0123456789abcdef" * 4  # 64 hex chars = 32 bytes
@@ -65,7 +38,7 @@ class TestKeyResolution:
         key_file.write_text(f"  \n{hex_str}\n  ", encoding="utf-8")
 
         resolved = increment_merger.resolve_e2e_key(str(key_file), logger)
-        assert resolved == "MOCK_KEY_64"
+        assert resolved.get_root() == bytes.fromhex(hex_str)
 
     def test_resolve_key_invalid_lengths_raise_or_return_none(self, tmp_path) -> None:
         # 16 bytes is invalid for WhatsApp 256-bit AES GCM key
@@ -83,6 +56,23 @@ class TestKeyResolution:
         # Non-existent file
         with pytest.raises(ValueError, match="Could not load decryption key"):
             increment_merger.resolve_e2e_key(str(tmp_path / "non_existent.key"), logger)
+
+    def test_hex_file_and_malformed_input_never_log_credentials(self, tmp_path, caplog):
+        secret = "c9" * 32
+        keyfile = tmp_path / "key.txt"
+        keyfile.write_text(secret + "\n")
+        with caplog.at_level(logging.DEBUG):
+            assert increment_merger.resolve_e2e_key(keyfile, logger).get_root() == bytes.fromhex(
+                secret
+            )
+            assert all(r.levelno < logging.WARNING for r in caplog.records)
+            malformed = secret[:-1] + "g"
+            keyfile.write_text(malformed)
+            for supplied in (malformed, keyfile):
+                with pytest.raises(ValueError) as err:
+                    increment_merger.resolve_e2e_key(supplied, logger)
+                assert malformed not in str(err.value)
+        assert secret not in caplog.text and malformed not in caplog.text
 
 
 class TestPostRestoreLidMigration:

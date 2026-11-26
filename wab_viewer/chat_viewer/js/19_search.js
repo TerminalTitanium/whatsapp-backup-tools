@@ -106,7 +106,7 @@
       const desc = (chat.description || '').trim();
       subHtml = desc ? highlight(desc.replace(/\s+/g, ' '), q) : 'Group chat';
     } else {
-      const formattedPhone = formatPhoneNumber(chat.phone_number || chat.id);
+      const formattedPhone = formatPhoneNumber(chat.phone_number);
       subHtml = formattedPhone ? highlight(formattedPhone, q) : '';
     }
 

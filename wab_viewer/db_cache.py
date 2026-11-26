@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+from shared.contact_history import meaningful_name
+
 
 def get_cache_db_path(output_root: Path) -> Path:
     return output_root / ".wa_viewer.db"
@@ -492,9 +494,9 @@ def _ensure_jid_map_resolved(
         for r in contact_rows:
             raw_num = str(r[0] or "").strip()
             folder = str(r[1] or "")
-            disp = str(r[2] or "").strip()
+            disp = meaningful_name(r[2])
             if not disp and folder:
-                disp = re.sub(r"\s*\(\+?\d+\)$", "", folder).strip()
+                disp = meaningful_name(re.sub(r"\s*\(\+?\d+\)$", "", folder))
             if not raw_num:
                 continue
             digits = re.sub(r"\D", "", raw_num)
@@ -655,6 +657,15 @@ def _ensure_jid_map_resolved(
                     """)
         except sqlite3.OperationalError:
             pass
+
+    # Preserve native identity links before adding heuristic display-name/number matches.
+    # Local profile photos must never be assigned via a partial phone-number match.
+    conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _avatar_jid_links (lid_row_id INTEGER PRIMARY KEY, jid_row_id INTEGER)"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO _avatar_jid_links SELECT lid_row_id,jid_row_id FROM _jid_map_resolved"
+    )
 
     # 5. Populate from lid_display_name matching phone numbers or contacts
     if has_ldn and "jid" in tables:

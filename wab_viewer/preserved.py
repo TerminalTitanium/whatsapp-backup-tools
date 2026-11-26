@@ -7,6 +7,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from shared.contact_history import meaningful_name
+
 
 def _detect_preserved_db(output_root: Path) -> Path | None:
     wa_db_dir = output_root / "Whatsapp Databases"
@@ -455,6 +457,25 @@ def _merge_messages(
     return merged[:limit]
 
 
+def _preserved_contact(archive_conn, chat_id, native_jid):
+    """Return the last known label and a usable phone number for a historical contact."""
+    candidate = chat_id
+    if native_jid and "@" in native_jid:
+        user, _, server = native_jid.partition("@")
+        candidate = user if server == "s.whatsapp.net" else ""
+    candidate = (candidate or "").removeprefix("+")
+    phone = candidate if re.fullmatch("[0-9]+", candidate) else ""
+    row = archive_conn.execute(
+        "SELECT display_name, folder FROM contacts WHERE number = ?", (chat_id,)
+    ).fetchone()
+    label = meaningful_name(row["display_name"]) if row else ""
+    if not label and chat_id == "0":
+        label = "WhatsApp"
+    if not label and row:
+        label = meaningful_name(row["folder"])
+    return label or (f"+{phone}" if phone else "Unknown Contact"), phone
+
+
 def _merge_preserved_chats(
     result: list[dict],
     pres_conn: sqlite3.Connection,
@@ -474,6 +495,8 @@ def _merge_preserved_chats(
         pres_cols = set()
 
     select_cols = ["chat_id", "chat_type", "newest_ts"]
+    if "chat_jid" in pres_cols:
+        select_cols.append("chat_jid")
     if "subject" in pres_cols:
         select_cols.append("subject")
     if "description" in pres_cols:
@@ -492,6 +515,8 @@ def _merge_preserved_chats(
         if (cid, ctype) in existing_chats:
             continue
 
+        jid = pc["chat_jid"] if "chat_jid" in pc.keys() else None
+        phone = ""
         display_name = cid
         description = None
         if ctype == "group":
@@ -522,17 +547,7 @@ def _merge_preserved_chats(
                 except sqlite3.OperationalError:
                     pass
         else:
-            con_row = archive_conn.execute(
-                "SELECT display_name, folder FROM contacts WHERE number = ?", (cid,)
-            ).fetchone()
-            if con_row and con_row["display_name"]:
-                display_name = con_row["display_name"]
-            elif cid == "0":
-                display_name = "WhatsApp"
-            elif con_row and con_row["folder"]:
-                display_name = con_row["folder"]
-            else:
-                display_name = f"+{cid}"
+            display_name, phone = _preserved_contact(archive_conn, cid, jid)
 
         try:
             last_msg = pres_conn.execute(
@@ -570,7 +585,8 @@ def _merge_preserved_chats(
             {
                 "id": cid,
                 "type": ctype,
-                "phone_number": "" if ctype == "group" else cid,
+                "phone_number": "" if ctype == "group" else phone,
+                "native_jid": jid,
                 "display_name": display_name,
                 "description": description,
                 "newest_ts": pc["newest_ts"],

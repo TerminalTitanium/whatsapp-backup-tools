@@ -12,6 +12,7 @@ import struct
 import zipfile
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from shared import db
@@ -1909,32 +1910,39 @@ def read_delimited_messages_bin(messages_bin_path: str) -> list[dict]:
 
 
 def resolve_e2e_key(e2e_key: object, logger: logging.Logger) -> object:
-    """Resolve an e2e key input (str, file path, or KeyFactory object) into a Key object."""
-    if not isinstance(e2e_key, str):
+    """Load a key object, a native WhatsApp key file, or a validated hex string/file."""
+    if not isinstance(e2e_key, (str, Path)):
         return e2e_key
 
     try:
+        from wa_crypt_tools.lib.key.key15 import Key15
         from wa_crypt_tools.lib.key.keyfactory import KeyFactory
     except ImportError:
-        logger.error("wa-crypt-tools is required to decrypt incremental backups.")
+        logger.error("wa-crypt-tools is required to decrypt WhatsApp backups.")
         raise
 
-    key_obj = KeyFactory.new(e2e_key)
-    if key_obj is None and os.path.isfile(e2e_key):
-        try:
-            with open(e2e_key, encoding="utf-8") as f:
-                hex_candidate = f.read().strip()
-            if len(hex_candidate) == 64:
-                key_obj = KeyFactory.new(hex_candidate)
-        except OSError:
-            pass
-
-    if key_obj is None:
-        raise ValueError(
-            f"Could not load decryption key from: {e2e_key}\n"
-            "  Make sure --e2e-key points to a valid WhatsApp key file or 64-character hex key."
-        )
-    return key_obj
+    # Never interpolate the supplied value in a log or exception: the same
+    # option accepts both filenames and literal keys. Avoid sending a text
+    # key to the Java deserializer, which can log the first bytes on failure.
+    error = "Could not load decryption key. Supply a native WhatsApp key file or 64 hex characters."
+    value = os.fsdecode(e2e_key)
+    try:
+        if os.path.isfile(value):
+            with open(value, "rb") as stream:
+                blob = stream.read(4097)
+            if len(blob) == 4097:
+                raise ValueError(error)
+            if blob.startswith(b"\xac\xed\x00\x05"):
+                key = KeyFactory.from_file(value)
+                if key is not None:
+                    return key
+                raise ValueError(error)
+            value = blob.decode("ascii").strip()
+        if not re.fullmatch(r"[A-Fa-f0-9]{64}", value):
+            raise ValueError(error)
+        return Key15(key=bytes.fromhex(value))
+    except (OSError, UnicodeError, TypeError, ValueError, RuntimeError, AttributeError):
+        raise ValueError(error) from None
 
 
 def decrypt_increment_archive(
