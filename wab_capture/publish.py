@@ -39,14 +39,16 @@ def publish(stage: Path, target: Path) -> None:
     if not target.exists():
         stage.rename(target)
         return
+    if sys.platform != "darwin" and not sys.platform.startswith("linux"):
+        raise OSError(errno.ENOTSUP, "Atomic directory exchange requires macOS or Linux.")
     libc = ctypes.CDLL(None, use_errno=True)
     src, dst = os.fsencode(stage), os.fsencode(target)
     if sys.platform == "darwin":
         result = libc.renamex_np(src, dst, 2)  # RENAME_SWAP
-    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+    elif hasattr(libc, "renameat2"):
         result = libc.renameat2(-100, src, -100, dst, 2)  # AT_FDCWD, RENAME_EXCHANGE
     else:
-        raise OSError(errno.ENOTSUP, "Atomic directory exchange requires macOS or Linux.")
+        raise OSError(errno.ENOTSUP, "Atomic directory exchange requires renameat2 on Linux.")
     if result:
         code = ctypes.get_errno()
         raise OSError(code, f"Could not exchange archive directories: {os.strerror(code)}")

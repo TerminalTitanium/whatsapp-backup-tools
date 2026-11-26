@@ -177,14 +177,14 @@ class AndroidDevice:
         if not rows:
             raise ValueError("Android returned no phone contacts.")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as tmp:
-            temp = Path(tmp.name)
-            try:
+        tmp = tempfile.NamedTemporaryFile(dir=destination.parent, delete=False)
+        temp = Path(tmp.name)
+        try:
+            with tmp:
                 tmp.write(("\n".join(rows) + "\n").encode("utf-8"))
-                tmp.flush()
-                os.replace(temp, destination)
-            finally:
-                temp.unlink(missing_ok=True)
+            os.replace(temp, destination)
+        finally:
+            temp.unlink(missing_ok=True)
         return len(rows)
 
     def pull(self, file: RemoteFile, destination: Path) -> None:
