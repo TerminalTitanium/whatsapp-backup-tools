@@ -49,7 +49,9 @@ def _compatibility(usb, device, info, args, work, session, log, first):
                     f"Account {i + 1}/{len(args.account)}: switch accounts, finish the local "
                     "WhatsApp backup, then press Enter to capture it. "
                 )
-                snapshot, raw = capture_raw(usb, device, info, session, args.avatar_map, log)
+                snapshot, raw = capture_raw(
+                    usb, device, info, session, args.avatar_map, log, verify_media=args.verify_media
+                )
             view = CapturedAccountView(snapshot, raw)
             files = view.databases()
             if not files[0].path.endswith(".crypt15"):
@@ -100,7 +102,9 @@ def capture(args):
 
             log(f"Device {info['device_id']} ({args.device})")
             try:
-                first = capture_raw(usb, device, info, session, args.avatar_map, log)
+                first = capture_raw(
+                    usb, device, info, session, args.avatar_map, log, verify_media=args.verify_media
+                )
             except (Exception, KeyboardInterrupt) as exc:
                 log(f"RAW INCOMPLETE: {exc or type(exc).__name__}")
                 raise
@@ -142,6 +146,11 @@ def main():
         action="append",
         type=Path,
         help="Local single-line crypt15 key. Repeat in account order, or enter interactively.",
+    )
+    p.add_argument(
+        "--verify-media",
+        action="store_true",
+        help="Read and verify the contents of every media file on the phone.",
     )
     p.add_argument("--serial", help="Select a specific ADB device")
     p.add_argument(

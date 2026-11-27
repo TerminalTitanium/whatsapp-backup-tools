@@ -50,6 +50,12 @@ class Phone:
     def media(self):
         return self.records("Media/")
 
+    def media_stats(self):
+        return [RemoteFile(e.path, e.size, None, e.sha256) for e in self.media()]
+
+    def media_digest(self, entry):
+        return hashlib.sha256(self.files[entry.path]).hexdigest()
+
     def discover_dirs(self):
         return (["/sdcard/WhatsApp/Databases"], ["/sdcard/WhatsApp/Media"])
 
@@ -80,6 +86,7 @@ def run_session(tmp_path, monkeypatch, phone, accounts, inputs=None, cached_key=
     monkeypatch.setattr("builtins.input", lambda *_: next(it))
     cli.capture(
         SimpleNamespace(
+            verify_media=True,
             root=tmp_path,
             device="test-device",
             account=accounts,

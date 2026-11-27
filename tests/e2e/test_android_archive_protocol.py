@@ -44,6 +44,12 @@ if args[:1] == ['-s']:
     args = args[2:]
 elif args[:1] == ['-d']:
     args = args[1:]
+mount = os.environ.get("TEST_SDCARD")
+if mount:
+    args = [a.replace("/sdcard", mount) for a in args]
+if env_log := os.environ.get("TEST_ADB_LOG"):
+    with open(env_log, "a", encoding="utf-8") as out:
+        print(repr(args), file=out)
 if args == ['get-serialno']:
     print('TEST-DEVICE')
 elif args[:1] == ['pull']:
@@ -59,11 +65,28 @@ elif args[:2] == ['shell', '-T']:
         counter.write_text(str(n))
         if n == 3:  # inventory + final validation for first, then second account
             shutil.copyfile(target, pathlib.Path(shlex.split(cmd)[1]) / 'Databases/msgstore.db.crypt15')
-    if cmd.startswith('content query'):
+    if mount and cmd.startswith('for path in'):
+        data = subprocess.check_output(['/bin/sh', '-c', cmd]).replace(mount.encode(), b'/sdcard')
+        sys.stdout.buffer.write(data)
+    elif cmd.startswith('sha256sum <'):
+        print(hashlib.sha256(pathlib.Path(shlex.split(cmd)[2]).read_bytes()).hexdigest())
+    elif cmd.startswith('content query'):
         print(os.environ['TEST_CONTACTS'])
     elif sys.platform == 'darwin' and cmd.startswith('cd '):
         words = shlex.split(cmd)
         root, directory = pathlib.Path(words[1]), words[4]
+        if "stat -c" in cmd and "sha256sum" not in cmd:
+            files = sorted(f for f in (root / directory).rglob('*') if f.is_file())
+            if files:
+                buf = sys.stdout.buffer
+                buf.write(str(len(files)).encode() + b'\0')
+                for f in files:
+                    buf.write(f.relative_to(root).as_posix().encode() + b'\0')
+                for f in files:
+                    st = f.stat()
+                    buf.write(f"{st.st_size} {int(st.st_mtime)} {int(st.st_ctime)} {st.st_ino}\n".encode())
+                buf.write(b'\0')
+            sys.exit(0)
         for f in sorted((root / directory).rglob('*')):
             if f.is_file():
                 b = f.read_bytes()

@@ -140,3 +140,28 @@ def test_mixed_raw_capture_and_offline_account_import(tmp_path):
     assert archive_history(phone, ACCOUNT_B) == ([("from-b", "account B only")], "Project Alpha")
     assert raw_manifest.read_bytes() == raw_manifest_bytes
     assert all((raw / entries[n]["path"]).read_bytes() == data for n, data in contents.items())
+
+
+def test_clean_default_capture_and_incremental_media(tmp_path):
+    phone = Phone(tmp_path)
+    card = tmp_path / "sdcard"
+    card.mkdir()
+    phone.phone.rename(card / "WhatsApp")
+    phone.env["TEST_SDCARD"] = str(card)
+    trace = tmp_path / "adb.log"
+    phone.env["TEST_ADB_LOG"] = str(trace)
+    args = ["--root", phone.store, "--device", "android"]
+    output = run_module("wab_capture", args, phone.env)
+    assert "copied 1 | reused 0" in output
+    assert "Open account setup" in output
+    assert "Reading media checksums on phone" not in output
+    trace.write_text("")
+    output = run_module("wab_capture", args, phone.env)
+    assert "copied 0 | reused 1" in output
+    commands = trace.read_text().splitlines()
+    assert not any("pull" in c and "/Media/" in c for c in commands)
+    assert not any("find Media/" in c and "sha256sum" in c for c in commands)
+    assert not any("'sha256sum <" in c for c in commands)
+    output = run_module("wab_capture", [*args, "--verify-media"], phone.env)
+    assert "Reading media checksums on phone" in output
+    assert "copied 0 | reused 1" in output

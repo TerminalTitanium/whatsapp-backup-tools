@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -320,6 +321,7 @@ def main():
     except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"Import stopped: {exc}\n")
     print(f"{result}: {path}")
+    print(shlex.join(["wab-viewer", str(path)]))
 
 
 if __name__ == "__main__":

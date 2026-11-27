@@ -16,6 +16,7 @@ def raw(working, monkeypatch, phone, *, accounts=None, keys=None, maps=None):
     monkeypatch.setattr(cli, "AndroidDevice", lambda *_args: phone)
     cli.capture(
         SimpleNamespace(
+            verify_media=True,
             root=working,
             device="test-device",
             serial=None,

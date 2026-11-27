@@ -7,6 +7,8 @@ import shlex
 import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
+from threading import Event, Thread
+from time import monotonic
 
 from shared.mac_avatars import capture_avatar, read_avatar_map
 
@@ -128,13 +130,34 @@ def _avatars(stage, maps, log):
     return list(observations.values())
 
 
-def capture_raw(usb, device, info, session, maps, log):
+def capture_raw(usb, device, info, session, maps, log, *, verify_media=False):
+    done = Event()
+    started = monotonic()
+    status = "Connecting to phone"
+
+    def report(message):
+        nonlocal status
+        status = message
+        log(message)
+
+    def heartbeat():
+        while not done.wait(15):
+            log(f"Elapsed {int(monotonic() - started)}s | {status}")
+
+    thread = Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        return _capture_raw(usb, device, info, session, maps, report, verify_media)
+    finally:
+        done.set()
+        thread.join()
+
+
+def _capture_raw(usb, device, info, session, maps, log, verify_media):
     captured = utc_now()
     snapshot_id = timestamp_id(captured) + "_device"
     dest = device / "snapshots" / snapshot_id
-    log(
-        "Scanning WhatsApp directories and checking file contents. Large media collections can take time."
-    )
+    log("Locating WhatsApp database and media directories on the phone…")
     database_dirs, media_dirs = usb.discover_dirs()
     if not database_dirs and not media_dirs:
         raise ValueError(
@@ -143,13 +166,36 @@ def capture_raw(usb, device, info, session, maps, log):
     with tempfile.TemporaryDirectory(prefix=".raw-", dir=device) as temp:
         stage = Path(temp) / "snapshot"
         stage.mkdir()
+        log(f"Copying databases from {len(database_dirs)} directories…")
         before = _db_inventory(usb, database_dirs)
         datasets = _copy_databases(usb, stage, before)
         media = {}
         counts = {}
+        log(f"Copied {len(datasets)} database files. Media directories: {len(media_dirs)}.")
+        inventories = {}
+        prior = {}
+        if not verify_media:
+            needed = {_parent(d) for d in media_dirs}
+            for old in sorted((device / "snapshots").glob("*/raw-manifest.json"), reverse=True):
+                if not needed:
+                    break
+                for parent, items in json.loads(old.read_bytes())["media_by_root"].items():
+                    if parent in needed:
+                        prior[parent] = items
+                        needed.remove(parent)
         for directory in media_dirs:
             root = _parent(directory)
-            media[root], counts[root] = sync_media(usb.at_root(root), device, stage)
+            view = usb.at_root(root)
+            if verify_media:
+                log(f"Reading media checksums on phone: {directory}")
+                entries = view.media()
+            else:
+                log(f"Listing file sizes and timestamps: {directory}")
+                entries = view.media_stats()
+            inventories[root] = entries
+            media[root], counts[root] = sync_media(
+                view, device, stage, entries=entries, previous=prior.get(root), log=log
+            )
         _annotate_paths(device, media)
         contacts_at = utc_now()
         contacts = "contacts/wa_contacts.txt"
@@ -167,9 +213,12 @@ def capture_raw(usb, device, info, session, maps, log):
             raise ValueError("Android database inventory changed during capture. Retry.")
         for directory in media_dirs:
             root = _parent(directory)
-            after = {row.path: (row.size, row.sha256) for row in usb.at_root(root).media()}
-            expected = {name: (row["size"], row["sha256"]) for name, row in media[root].items()}
-            if after != expected:
+            view = usb.at_root(root)
+            log(
+                f"Checking {'checksums' if verify_media else 'file sizes and timestamps'} before saving: {directory}"
+            )
+            after = view.media() if verify_media else view.media_stats()
+            if after != inventories[root]:
                 raise ValueError("Android media inventory changed during capture. Retry.")
         manifest = {
             "kind": "android-device-raw",
@@ -206,6 +255,14 @@ def capture_raw(usb, device, info, session, maps, log):
         log(
             f"Shared media total: added={totals['added']} skipped={totals['skipped']} conflicts={totals['conflicts']}"
         )
+        from .prepare import kind
+
+        for row in datasets:
+            if kind(row) == "full":
+                command = shlex.join(["wab-prepare", str(dest), "--database", row["source_path"]])
+                log(
+                    f"Open account setup for {row['relative_path']!r} ({row['size']} bytes): {command}"
+                )
         if not datasets:
             log("No database files were visible in this capture.")
         if contacts:

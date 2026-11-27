@@ -242,6 +242,10 @@ def prepare_locked(raw, data, fingerprint, args):
     if args.compare_history:
         account, alias = (next(iter(owners)) if len(owners) == 1 else None), None
     else:
+        if not args.account and not owners and sys.stdin.isatty():
+            args.account = input(
+                f"Account label for {base['source_path']} (e.g. personal): "
+            ).strip()
         account, alias = account_for(args.account, aliases, owners)
     known_key = None
     if args.key_file:

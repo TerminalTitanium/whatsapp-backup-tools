@@ -49,7 +49,8 @@ class RemoteFile:
 
     path: str
     size: int
-    sha256: str
+    sha256: str | None
+    stamp: str | None = None
 
 
 def _adb(args: list[str], timeout: int) -> bytes:
@@ -153,7 +154,22 @@ class AndroidDevice:
 
     def discover_dirs(self):
         """Discover storage directories while pruning media and known database trees."""
+        # Probe standard Android layouts directly, including shared-storage aliases.
+        # Recursive discovery still covers manufacturer and secondary account layouts.
+        parents = set(self.search_roots) | {
+            root
+            for root in _ROOTS
+            if any(PurePosixPath(root).is_relative_to(p) for p in self.search_roots)
+        }
+        direct = [
+            str(PurePosixPath(parent) / name)
+            for parent in sorted(parents)
+            if PurePosixPath(parent).name not in {"Databases", "Media"}
+            for name in ("Databases", "Media")
+        ]
         command = (
+            f"for path in {shlex.join(direct)}; do "
+            r"""if [ -d "$path" ]; then printf '%s\000' "$path"; fi; done; """
             f"for dir in {shlex.join(self.search_roots)}; do "
             'case "${dir##*/}" in Databases|Media) '
             r"""(cd "$dir") || exit 1; printf '%s\000' "$dir"; continue;; esac; """
@@ -197,6 +213,50 @@ class AndroidDevice:
 
     def media(self) -> list[RemoteFile]:
         return self._scan("Media", "")
+
+    def media_stats(self):
+        """Batch stat calls on the device. Filenames are NUL framed separately."""
+        batch = (
+            r"""printf '%s\000' "$#" "$@"; stat -c '%s %Y %Z %i' "$@" || exit 1; printf '\000'"""
+        )
+        cmd = f"cd {shlex.quote(self.root)} && find Media/ -type f -exec sh -c {shlex.quote(batch)} sh {{}} +"
+        fields = iter(self._shell(cmd, 3600).split(b"\0"))
+        result = {}
+        try:
+            for count in fields:
+                if not count:
+                    if next(fields, None) is not None:
+                        raise ValueError("Invalid Android media inventory")
+                    break
+                n = int(count)
+                if n < 1:
+                    raise ValueError("Invalid Android media batch")
+                names = [next(fields).decode() for _ in range(n)]
+                lines = next(fields).decode("ascii").splitlines()
+                for name, line in zip(names, lines, strict=True):
+                    numbers = line.split()
+                    if (
+                        not name.startswith("Media/")
+                        or not _relative(name)
+                        or name in result
+                        or len(numbers) != 4
+                        or not all(re.fullmatch(r"-?[0-9]+", v) for v in numbers)
+                        or int(numbers[0]) < 0
+                    ):
+                        raise ValueError("Invalid Android media stat record")
+                    result[name] = RemoteFile(name, int(numbers[0]), None, " ".join(numbers[1:]))
+            else:
+                raise ValueError("Truncated Android media inventory")
+        except StopIteration as exc:
+            raise ValueError("Truncated Android media inventory") from exc
+        return sorted(result.values(), key=lambda row: row.path)
+
+    def media_digest(self, entry):
+        path = shlex.quote(f"{self.root}/{entry.path}")
+        result = self._shell(f"sha256sum < {path}", 3600).decode().split()
+        if not result or not _DIGEST.fullmatch(result[0]):
+            raise ValueError("Invalid Android checksum")
+        return result[0]
 
     def all_databases(self) -> list[RemoteFile]:
         return self._scan("Databases", "")
@@ -251,10 +311,11 @@ class AndroidDevice:
             _adb(["-s", self.serial, "pull", f"{self.root}/{file.path}", str(temp)], 3600)
             if temp.stat().st_size != file.size:
                 raise ValueError(f"Size changed during USB transfer: {file.path}")
-            with temp.open("rb") as stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            if digest != file.sha256:
-                raise ValueError(f"Contents changed during USB transfer: {file.path}")
+            if file.sha256 is not None:
+                with temp.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                if digest != file.sha256:
+                    raise ValueError(f"Contents changed during USB transfer: {file.path}")
             temp.chmod(0o600)
             os.replace(temp, destination)
         finally:

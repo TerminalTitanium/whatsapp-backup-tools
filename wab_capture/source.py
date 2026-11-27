@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -127,47 +128,96 @@ class MediaPaths:
         return True
 
 
-def sync_media(usb, device, stage):
+def sync_media(usb, device, stage, *, entries=None, previous=None, log=None):
     """Keep the first content at each native path; address later versions by hash."""
     media = {}
     counts = {"added": 0, "skipped": 0, "conflicts": 0}
     paths = MediaPaths(device / "media")
-    for entry in sorted(usb.media(), key=lambda record: record.path):
+    entries = sorted(usb.media() if entries is None else entries, key=lambda row: row.path)
+    previous = previous or {}
+    next_update = 0
+    for index, entry in enumerate(entries):
         relative = _relative(entry.path, "Media")
-        if not re.fullmatch(r"[a-f0-9]{64}", entry.sha256) or entry.path in media:
-            raise ValueError("Invalid or repeated media inventory record.")
+        if entry.path in media:
+            raise ValueError("Repeated media inventory record")
+        if log and time.monotonic() >= next_update:
+            log(
+                f"Media {index}/{len(entries)} | copied {counts['added']} | reused {counts['skipped']} | next {entry.path!r}"
+            )
+            next_update = time.monotonic() + 4
         original = device / "media" / relative
         usable = paths.reserve(relative)
+        old = previous.get(entry.path)
+        if (
+            entry.stamp is not None
+            and old
+            and old.get("source_stat") == entry.stamp
+            and old["size"] == entry.size
+        ):
+            saved = device / old["path"]
+            _ensure_inside(device, saved)
+            if saved.is_file():
+                st = saved.stat()
+                if st.st_size == entry.size and old.get("local_stat") == [
+                    st.st_mtime_ns,
+                    st.st_ctime_ns,
+                ]:
+                    media[entry.path] = dict(old)
+                    counts["skipped"] += 1
+                    continue
+        sha = entry.sha256
+        temporary = stage / ".pull"
+        downloaded = False
+        if sha is None:
+            if relative in paths.existing_files or not usable:
+                sha = usb.media_digest(entry)
+            else:
+                usb.pull(entry, temporary)
+                if temporary.stat().st_size != entry.size:
+                    raise ValueError("Media transfer changed during capture.")
+                sha = digest(temporary)
+                downloaded = True
+        if not re.fullmatch(r"[a-f0-9]{64}", sha):
+            raise ValueError("Invalid Android media checksum")
         original_matches = True
         if usable or relative in paths.existing_files:
             _ensure_inside(device / "media", original)
             if relative in paths.existing_files:
-                original_matches = digest(original) == entry.sha256
+                original_matches = digest(original) == sha
         target = original
         if not usable or not original_matches:
             counts["conflicts"] += 1
-            target = device / "media-versions" / entry.sha256[:2] / entry.sha256
+            target = device / "media-versions" / sha[:2] / sha
             _ensure_inside(device, target)
         if target.exists():
             if target.stat().st_size != entry.size or (
-                target != original and digest(target) != entry.sha256
+                target != original and digest(target) != sha
             ):
                 raise ValueError("Previously stored media version failed its checksum.")
             counts["skipped"] += 1
         else:
-            temporary = stage / ".pull"
-            usb.pull(entry, temporary)
-            if temporary.stat().st_size != entry.size or digest(temporary) != entry.sha256:
-                raise ValueError("Media transfer changed during capture.")
+            if not downloaded:
+                usb.pull(entry, temporary)
+                if temporary.stat().st_size != entry.size or digest(temporary) != sha:
+                    raise ValueError("Media transfer changed during capture.")
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             temporary.rename(target)
             counts["added"] += 1
         media[entry.path] = {
             "path": target.relative_to(device).as_posix(),
             "size": entry.size,
-            "sha256": entry.sha256,
+            "sha256": sha,
             "native_path_unique": original_matches,
         }
+        if entry.stamp is not None:
+            st = target.stat()
+            media[entry.path].update(
+                source_stat=entry.stamp, local_stat=[st.st_mtime_ns, st.st_ctime_ns]
+            )
+    if log:
+        log(
+            f"Media {len(entries)}/{len(entries)} | copied {counts['added']} | reused {counts['skipped']}"
+        )
     return media, counts
 
 
