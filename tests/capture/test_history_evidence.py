@@ -1,6 +1,7 @@
 """Exercise authenticated, read-only comparison of Android direct-chat history."""
 
 import json
+import os
 import sqlite3
 import tempfile
 import zlib
@@ -149,7 +150,8 @@ def test_authentication_and_integrity_before_return_with_cleanup(tmp_path, monke
     encrypted = tmp_path / "encrypted"
     encrypt(source, encrypted)
     with authenticated_sqlite(encrypted, KEY) as private:
-        assert private.parent.stat().st_mode & 0o077 == 0
+        if os.name == "posix":
+            assert private.parent.stat().st_mode & 0o077 == 0
         assert private.read_bytes() == source.read_bytes()
     assert not private.exists()
     with pytest.raises(ValueError, match="Wrong key or corrupt"):
