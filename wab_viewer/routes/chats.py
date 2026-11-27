@@ -7,7 +7,8 @@ import json
 import re
 import sqlite3
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, abort, jsonify, request
+from shared.contact_history import meaningful_name
 
 from ..context import get_viewer_context
 from ..db_cache import _find_ios_call_history_db
@@ -18,7 +19,7 @@ from ..hydration import (
     _media_type_from_path,
     _resolve_ios_jid,
 )
-from ..preserved import _merge_preserved_chats
+from ..preserved import _merge_preserved_chats, _preserved_contact
 from ..protobuf import _extract_ios_group_description, _parse_ios_poll_blob
 from ..queries.calls import (
     _resolve_android_call_targets,
@@ -37,6 +38,43 @@ from ..system_events import ALLOWED_GROUP_SYSTEM_ACTIONS, format_participant_nam
 bp = Blueprint("chats", __name__)
 
 
+@bp.route("/api/avatars/<digest>")
+def api_avatar(digest):
+    if not re.fullmatch("[0-9a-f]{64}", digest):
+        abort(404)
+    conn = get_viewer_context().get_archive()
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='avatar_blobs'"
+    ).fetchone():
+        abort(404)
+    row = conn.execute("SELECT mime,data FROM avatar_blobs WHERE sha256=?", (digest,)).fetchone()
+    if row is None or row[0] not in {"image/jpeg", "image/png", "image/webp"}:
+        abort(404)
+    return Response(row[1], mimetype=row[0], headers={"X-Content-Type-Options": "nosniff"})
+
+
+def _attach_android_avatars(result, avatar_db):
+    avatars = {}
+    if avatar_db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='avatar_observations'"
+    ).fetchone():
+        avatars = dict(
+            avatar_db.execute("""
+            SELECT jid, sha256 FROM (SELECT jid, sha256, ROW_NUMBER() OVER (
+                PARTITION BY jid ORDER BY stamp DESC,snapshot DESC) AS n
+                FROM avatar_observations) WHERE n=1
+        """).fetchall()
+        )
+    for chat in result:
+        native = chat.pop("native_jid", None)
+        linked = chat.pop("avatar_confirmed_alias", False)
+        digest = avatars.get(native)
+        if not digest and linked and chat["phone_number"]:
+            digest = avatars.get(f"{chat['phone_number']}@s.whatsapp.net")
+        if digest:
+            chat["avatar_digest"] = digest
+
+
 @bp.route("/api/chats")
 def api_chats():
     ctx = get_viewer_context()
@@ -45,7 +83,9 @@ def api_chats():
         result = []
         pres = ctx.get_preserved()
         if pres is not None:
-            result = _merge_preserved_chats(result, pres, ctx.get_archive())
+            archive = ctx.get_archive()
+            result = _merge_preserved_chats(result, pres, archive)
+            _attach_android_avatars(result, archive)
         return jsonify(result)
 
     if ctx.source_type == "android":
@@ -118,17 +158,25 @@ def api_chats():
             else ""
         )
         con_ldn_arm = "NULLIF(con_ldn.display_name, '')," if ctx.caps.has_lid_dn else ""
-        con_ldn_folder_arm = "con_ldn.folder," if ctx.caps.has_lid_dn else ""
         ldn_chat_name_arm = (
             "CASE WHEN ldn_c.display_name NOT LIKE '%∙%' AND ldn_c.display_name NOT LIKE '%\u2219%' THEN NULLIF(ldn_c.display_name, '') END,"
             if ctx.caps.has_lid_dn
             else ""
         )
         ldn_chat_user_arm = "NULLIF(ldn_c.username, '')," if ctx.caps.has_lid_dn else ""
+        if ctx.caps.has_jid_server:
+            native_jid = "j_chat.user || '@' || j_chat.server"
+        else:
+            native_jid = "NULL"
+        if ctx.caps.has_jid_raw_string:
+            native_jid = f"COALESCE(NULLIF(j_chat.raw_string, ''), {native_jid})"
         chat_archived_col = "COALESCE(c.archived, 0)" if ctx.caps.has_chat_archived else "0"
         rows = conn.execute(f"""
             SELECT
                 c._id                                               AS chat_row_id,
+                {native_jid}                                        AS native_jid,
+                EXISTS (SELECT 1 FROM _avatar_jid_links al
+                        WHERE al.lid_row_id = c.jid_row_id AND al.jid_row_id = jm_chat.jid_row_id) AS avatar_confirmed_alias,
                 {chat_archived_col}                                 AS is_archived,
                 CASE WHEN {is_group_chat} THEN CAST(c._id AS TEXT)
                      ELSE COALESCE(
@@ -142,7 +190,7 @@ def api_chats():
                 CASE WHEN {is_group_chat} THEN ''
                      ELSE COALESCE(
                          {_clean_user_sql("j_chat_real.user")},
-                         {_clean_user_sql("j_chat.user")},
+                         CASE WHEN NOT ({j_c_is_lid}) THEN {_clean_user_sql("j_chat.user")} END,
                          ''
                      )
                 END                                                 AS phone_number,
@@ -152,8 +200,6 @@ def api_chats():
                     NULLIF(con.display_name, ''),
                     {con_ldn_arm}
                     CASE WHEN COALESCE(j_chat_real.user, j_chat.user) = '0' THEN 'WhatsApp' END,
-                    con.folder,
-                    {con_ldn_folder_arm}
                     {ldn_chat_name_arm}
                     {ldn_chat_user_arm}
                     CASE WHEN {is_group_chat} THEN 'Unknown Group (' || c._id || ')' END,
@@ -820,6 +866,8 @@ def api_chats():
         for c in result:
             c.setdefault("is_preserved_only", False)
             c.setdefault("description", None)
+    if ctx.source_type == "android":
+        _attach_android_avatars(result, ctx.get_archive())
     return jsonify(result)
 
 
@@ -908,9 +956,16 @@ def api_chat_info():
             extra = ctx.queries.android_filter
 
             if chat_type == "contact":
+                raw_phone = "j.user"
+                if ctx.caps.has_jid_server:
+                    raw_phone = f"CASE WHEN j.server='s.whatsapp.net' THEN {raw_phone} END"
+                if ctx.caps.has_jid_raw_string:
+                    raw_phone = (
+                        f"CASE WHEN COALESCE(j.raw_string,'') NOT LIKE '%@lid' THEN {raw_phone} END"
+                    )
                 row = conn.execute(
-                    """
-                    SELECT COALESCE(j_real.user, j.user) AS user
+                    f"""
+                    SELECT COALESCE(j_real.user, {raw_phone}) AS user
                     FROM chat c
                     LEFT JOIN jid j ON j._id = c.jid_row_id
                     LEFT JOIN (
@@ -924,7 +979,7 @@ def api_chat_info():
                 """,
                     (chat_id,),
                 ).fetchone()
-                number = row["user"] if row else chat_id
+                number = row["user"] if row else None
 
                 name_row = conn.execute(
                     """
@@ -936,10 +991,11 @@ def api_chat_info():
                 ).fetchone()
                 if chat_id == "0":
                     display_name = "WhatsApp"
-                elif name_row and name_row["name"]:
-                    display_name = name_row["name"]
                 else:
-                    display_name = None
+                    label = name_row["name"] if name_row else ""
+                    display_name = meaningful_name(label) or (
+                        f"+{number}" if number else ("Unknown Contact" if row else None)
+                    )
             else:
                 members = _group_members_android(conn, chat_id)
 
@@ -1237,17 +1293,14 @@ def api_chat_info():
                         if g_row:
                             display_name = g_row["subject"] or g_row["folder"]
                     else:
-                        c_row = arch.execute(
-                            "SELECT display_name, folder FROM contacts WHERE number = ?",
-                            (chat_id,),
-                        ).fetchone()
-                        if c_row:
-                            display_name = c_row["display_name"] or c_row["folder"]
-                        elif chat_id == "0":
-                            display_name = "WhatsApp"
-                        else:
-                            display_name = f"+{chat_id}"
-                        number = chat_id
+                        saved_jid = None
+                        with contextlib.suppress(sqlite3.OperationalError):
+                            saved = pres.execute(
+                                "SELECT chat_jid FROM preserved_chats WHERE chat_id=? AND chat_type=?",
+                                (chat_id, chat_type),
+                            ).fetchone()
+                            saved_jid = saved[0] if saved else None
+                        display_name, number = _preserved_contact(arch, chat_id, saved_jid)
 
     calls_count = 0
     pres = ctx.get_preserved()

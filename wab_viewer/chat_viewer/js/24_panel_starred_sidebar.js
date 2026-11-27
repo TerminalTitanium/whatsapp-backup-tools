@@ -79,10 +79,9 @@
 
     const avatar = document.createElement('div');
     avatar.className = 'chat-item-avatar';
-    const chatName = m.chat_name || 'Chat';
-    const avatarKey = m.chat_phone || m.chat_id || chatName;
-    avatar.style.backgroundColor = getAvatarColor(avatarKey);
-    avatar.textContent = getInitials(chatName);
+    const chat = allChats.find(c => String(c.id) === String(m.chat_id) && c.type === m.chat_type);
+    const chatName = (chat && chat.display_name) || m.chat_name || 'Chat';
+    renderChatAvatar(avatar, chat || {id: m.chat_id, phone_number: m.chat_phone, display_name: chatName});
     avatar.setAttribute('aria-hidden', 'true');
     el.appendChild(avatar);
 

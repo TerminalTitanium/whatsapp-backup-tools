@@ -65,16 +65,14 @@
       heading.textContent = currentChat.type === 'group' ? 'Group Info' : 'Contact Info';
     }
     if (avatar) {
-      const avatarKey = currentChat.phone_number || currentChat.id || currentChat.display_name;
-      avatar.style.backgroundColor = getAvatarColor(avatarKey);
-      avatar.textContent = getInitials(currentChat.display_name);
+      renderChatAvatar(avatar, currentChat);
     }
     if (title) {
       title.textContent = currentChat.display_name || '';
     }
     if (phone) {
       if (currentChat.type === 'contact') {
-        const fmtPhone = formatPhoneNumber(currentChat.phone_number || currentChat.id);
+        const fmtPhone = formatPhoneNumber(currentChat.phone_number);
         phone.textContent = fmtPhone ? fmtPhone : '';
       } else {
         phone.textContent = 'Group conversation';

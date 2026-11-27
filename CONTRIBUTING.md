@@ -28,7 +28,7 @@ Thank you for your interest in contributing to WhatsApp Backup Tools (`whatsapp-
 Clone the repository and install all dependencies in editable mode:
 
 ```bash
-git clone https://github.com/auanasgheps/whatsapp-backup-tools.git
+git clone https://github.com/TerminalTitanium/whatsapp-backup-tools.git
 cd whatsapp-backup-tools
 
 # Install in editable mode with all development, test, and lint dependencies

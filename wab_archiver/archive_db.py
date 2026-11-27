@@ -45,6 +45,7 @@ def open_archive_db(output_root: str) -> sqlite3.Connection:
             is_hardlink    INTEGER NOT NULL DEFAULT 0,
             timestamp_ms   INTEGER,
             exif_stamped   INTEGER NOT NULL DEFAULT 0,
+            source_md5     BLOB,
             PRIMARY KEY (original_path, archive_path)
         );
         CREATE INDEX IF NOT EXISTS idx_archive_copies_path ON archive_copies(archive_path);
@@ -90,6 +91,17 @@ def open_archive_db(output_root: str) -> sqlite3.Connection:
     if "size" not in existing:
         conn.execute("ALTER TABLE files ADD COLUMN size INTEGER")
     existing_copies = {r[1] for r in conn.execute("PRAGMA table_info(archive_copies)")}
+    if "source_md5" not in existing_copies:
+        conn.execute("ALTER TABLE archive_copies ADD COLUMN source_md5 BLOB")
+        # Legacy files.md5 describes only the last observed source at this path.
+        # Backfill only unambiguous rows. Other legacy copies can be matched by bytes.
+        conn.execute("""
+            UPDATE archive_copies SET source_md5 =
+                (SELECT md5 FROM files WHERE files.original_path = archive_copies.original_path)
+            WHERE original_path IN (
+                SELECT original_path FROM archive_copies GROUP BY original_path HAVING COUNT(*) = 1
+            )
+        """)
     if "is_hardlink" not in existing_copies:
         conn.execute("ALTER TABLE archive_copies ADD COLUMN is_hardlink INTEGER NOT NULL DEFAULT 0")
     if "timestamp_ms" not in existing_copies:
@@ -193,11 +205,12 @@ def record_file_archived(
         (original_path, md5, size),
     )
     cursor.execute(
-        "INSERT INTO archive_copies (original_path, archive_path, is_hardlink, timestamp_ms) VALUES (?, ?, ?, ?) "
+        "INSERT INTO archive_copies (original_path, archive_path, is_hardlink, timestamp_ms, source_md5) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(original_path, archive_path) DO UPDATE SET "
         "is_hardlink = MAX(archive_copies.is_hardlink, excluded.is_hardlink), "
-        "timestamp_ms = COALESCE(excluded.timestamp_ms, archive_copies.timestamp_ms)",
-        (original_path, archive_path, is_hardlink, timestamp_ms),
+        "timestamp_ms = COALESCE(excluded.timestamp_ms, archive_copies.timestamp_ms), "
+        "source_md5 = excluded.source_md5",
+        (original_path, archive_path, is_hardlink, timestamp_ms, md5),
     )
 
 
@@ -243,11 +256,17 @@ def load_canonical_copies(conn: sqlite3.Connection, output_root: str) -> dict[by
     """
     canonical_map = {}
     rows = conn.execute(
-        "SELECT f.md5, ac.archive_path FROM files f "
-        "JOIN archive_copies ac ON ac.original_path = f.original_path "
-        "WHERE f.md5 IS NOT NULL AND length(f.md5) > 0 "
-        "AND ac.archive_path NOT LIKE '%.thumbnails/%' "
-        "ORDER BY ac.rowid ASC"
+        """
+        SELECT COALESCE(ac.source_md5, f.md5), ac.archive_path FROM archive_copies ac
+        JOIN files f ON f.original_path = ac.original_path
+        WHERE (length(ac.source_md5) > 0 OR (
+            ac.source_md5 IS NULL AND length(f.md5) > 0 AND NOT EXISTS (
+                SELECT 1 FROM archive_copies other
+                WHERE other.original_path=ac.original_path AND other.rowid != ac.rowid
+            )
+        )) AND ac.archive_path NOT LIKE '%.thumbnails/%'
+        ORDER BY ac.rowid
+        """
     ).fetchall()
     for md5_bytes, rel_path in rows:
         if md5_bytes not in canonical_map:
@@ -257,16 +276,33 @@ def load_canonical_copies(conn: sqlite3.Connection, output_root: str) -> dict[by
     return canonical_map
 
 
+def load_first_copy_names(conn: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    """Original source and destination directory identify the first filename in that chat.
+
+    The v0.80 index already records these paths, including legacy sender suffixes.
+    Keep the first name as the base when a later snapshot contains different bytes.
+    """
+    from wab_capture.versions import original_path
+
+    names = {}
+    for original, archived in conn.execute(
+        "SELECT original_path, archive_path FROM archive_copies ORDER BY rowid"
+    ):
+        parent, filename = os.path.split(archived)
+        names.setdefault((original_path(original), parent), filename)
+    return names
+
+
 def load_archived_file_set(conn: sqlite3.Connection) -> set[tuple[str, str, bytes]]:
     """
     Load an in-memory set of (original_path, archive_path, md5) for fast O(1)
     collision avoidance during incremental runs.
     """
     rows = conn.execute(
-        "SELECT ac.original_path, ac.archive_path, f.md5 "
+        "SELECT ac.original_path, ac.archive_path, ac.source_md5 "
         "FROM archive_copies ac "
         "JOIN files f ON f.original_path = ac.original_path "
-        "WHERE f.md5 IS NOT NULL AND length(f.md5) > 0"
+        "WHERE length(ac.source_md5) > 0"
     ).fetchall()
     return set(rows)
 
@@ -287,6 +323,57 @@ def _unique_group_name(desired: str, existing: set) -> str:
         counter += 1
 
 
+def android_group_ids(conn: sqlite3.Connection) -> dict[str, str]:
+    """Android rowids are local to a database. The group JID travels with the chat."""
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(jid)")}
+    if "raw_string" in columns:
+        jid = "j.raw_string"
+    elif {"user", "server"} <= columns:
+        jid = "j.user || '@' || j.server"
+    else:
+        return {}
+    return dict(
+        conn.execute(
+            f"SELECT CAST(c._id AS TEXT), {jid} FROM chat c JOIN jid j ON j._id = c.jid_row_id "
+            f"WHERE {jid} LIKE '%@g.us'"
+        )
+    )
+
+
+def stable_group_index(conn, groups, prior_ids, current_ids, subjects, output_root):
+    """Rebind native rowids to permanent directories, including v0.80 archives."""
+    conn.execute("CREATE TABLE IF NOT EXISTS stable_group_paths(jid TEXT PRIMARY KEY, folder TEXT)")
+    folders = dict(conn.execute("SELECT jid,folder FROM stable_group_paths"))
+    for row_id, jid in prior_ids.items():
+        if row_id in groups:
+            folders.setdefault(jid, groups[row_id]["folder"])
+    reserved = {g["folder"].casefold() for g in groups.values()}
+    reserved.update(f.casefold() for f in folders.values())
+    physical = os.path.join(output_root, "Groups")
+    if os.path.isdir(physical):
+        reserved.update(n.casefold() for n in os.listdir(physical))
+
+    updated = groups.copy()
+    for row_id, jid in current_ids.items():
+        subject = subjects.get(row_id)
+        if jid not in folders:
+            if subject is None:
+                continue
+            desired = _sanitize_filename(subject)
+            if desired in {"", ".", ".."}:
+                desired = f"Group ({jid.split('@')[0]})"
+            candidate = desired
+            number = 1
+            while candidate.casefold() in reserved:
+                number += 1
+                candidate = f"{desired} ({number})"
+            folders[jid] = candidate
+            reserved.add(candidate.casefold())
+        updated[row_id] = {"folder": folders[jid], "subject": subject or ""}
+    conn.executemany("INSERT OR IGNORE INTO stable_group_paths VALUES(?,?)", folders.items())
+    return updated
+
+
 def sync_group_names(
     group_subjects: dict,
     output_root: str,
@@ -294,6 +381,7 @@ def sync_group_names(
     logger: logging.Logger,
     conn: sqlite3.Connection | None = None,
     dry_run: bool = False,
+    stable_paths: bool = False,
 ) -> dict:
     groups_root = os.path.join(output_root, "Groups")
     updated = dict(group_index)
@@ -307,6 +395,10 @@ def sync_group_names(
         old_subject = entry.get("subject", "")
 
         if current_subject == old_subject:
+            continue
+
+        if stable_paths:
+            updated[key] = {"folder": old_folder, "subject": current_subject or old_subject}
             continue
 
         desired = (
@@ -356,7 +448,9 @@ def resolve_group_folder(chat_row_id: int, chat_subject: str | None, group_index
     if key in group_index:
         return group_index[key]["folder"]
 
-    desired = _sanitize_filename(chat_subject) if chat_subject else f"Unknown Group ({chat_row_id})"
+    desired = _sanitize_filename(chat_subject) if chat_subject else ""
+    if desired in {"", ".", ".."}:
+        desired = f"Unknown Group ({chat_row_id})"
     existing = {v["folder"] for v in group_index.values()}
     folder = _unique_group_name(desired, existing)
     group_index[key] = {"folder": folder, "subject": chat_subject or ""}
@@ -371,6 +465,7 @@ def sync_folder_names(
     logger: logging.Logger,
     conn: sqlite3.Connection | None = None,
     dry_run: bool = False,
+    stable_paths: bool = False,
 ) -> dict:
     contacts_root = os.path.join(output_root, "Contacts")
     updated_index = dict(folder_index)
@@ -383,6 +478,10 @@ def sync_folder_names(
 
         if old_folder is None:
             updated_index[canonical] = (new_folder, display_name)
+            continue
+
+        if stable_paths:
+            updated_index[canonical] = (old_folder, display_name or entry[1])
             continue
 
         if old_folder == new_folder:

@@ -402,7 +402,8 @@ def test_viewer_preserved_messages_integration(tmp_path: Path) -> None:
 
     assert "deleted_contact" in chat_map
     assert chat_map["deleted_contact"]["is_preserved_only"] is True
-    assert chat_map["deleted_contact"]["display_name"] == "+deleted_contact"
+    assert chat_map["deleted_contact"]["display_name"] == "Unknown Contact"
+    assert chat_map["deleted_contact"]["phone_number"] == ""
     assert chat_map["deleted_contact"]["last_msg_preview"] == "Msg from deleted chat"
 
     # Verify /api/messages merges and replaces revoked message
@@ -450,7 +451,8 @@ def test_viewer_preserved_messages_integration(tmp_path: Path) -> None:
     assert info_res.status_code == 200
     info_data = info_res.get_json()
     assert info_data["total"] == 1
-    assert info_data["display_name"] == "+deleted_contact"
+    assert info_data["display_name"] == "Unknown Contact"
+    assert info_data["number"] == ""
     assert info_data["first_ts"] == 5000
     assert info_data["last_ts"] == 5000
 

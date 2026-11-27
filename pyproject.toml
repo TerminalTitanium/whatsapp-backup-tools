@@ -1,6 +1,6 @@
 [project]
 name = "whatsapp-backup-tools"
-version = "0.80"
+version = "0.80+fork.1"
 description = "Archive and browse your WhatsApp data offline. Archive media from Android and iOS backups into a structured folder hierarchy. View chats in a WebUI that mirrors WhatsApp Web."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,12 +49,14 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/auanasgheps/whatsapp-backup-tools"
-Documentation = "https://github.com/auanasgheps/whatsapp-backup-tools#readme"
-Repository = "https://github.com/auanasgheps/whatsapp-backup-tools"
-Issues = "https://github.com/auanasgheps/whatsapp-backup-tools/issues"
+Homepage = "https://github.com/TerminalTitanium/whatsapp-backup-tools"
+Documentation = "https://github.com/TerminalTitanium/whatsapp-backup-tools#readme"
+Repository = "https://github.com/TerminalTitanium/whatsapp-backup-tools"
+Upstream = "https://github.com/auanasgheps/whatsapp-backup-tools"
 
 [project.scripts]
+wab-capture = "wab_capture.cli:main"
+wab-import = "wab_capture.importer:main"
 wab-archiver = "wab_archiver.__main__:main"
 wab-viewer = "wab_viewer.__main__:main"
 
@@ -63,15 +65,18 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["shared*", "wab_archiver*", "wab_viewer*"]
+include = ["shared*", "wab_archiver*", "wab_viewer*", "wab_capture*"]
 
 [tool.setuptools.package-data]
 "wab_viewer.chat_viewer" = ["*.svg", "pico.min.css", "css/*.css", "js/*.js"]
 
+[tool.coverage.run]
+patch = ["subprocess"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["shared", "wab_archiver", "wab_viewer", "tests"]
+src = ["shared", "wab_archiver", "wab_viewer", "wab_capture", "tests"]
 
 [tool.ruff.lint]
 select = [

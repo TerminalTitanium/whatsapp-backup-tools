@@ -24,6 +24,7 @@ import tempfile
 import tomllib
 import zlib
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from shared import db, hashing, metadata_writer
 
@@ -353,6 +354,8 @@ def write_missing_report(report_path: str, rows: list, logger: logging.Logger):
         "message_url",
         "media_name",
     ]
+    if "native_file_path" in rows[0]:
+        fieldnames.append("native_file_path")
     with open(report_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -409,25 +412,23 @@ def write_duplicate_report(
 ):
     """Write a CSV report of media files with identical content at multiple paths, grouped into sections."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(archive_copies)")}
-    ts_expr = "MIN(ac.timestamp_ms)" if "timestamp_ms" in cols else "NULL"
+    ts_expr = "ac.timestamp_ms" if "timestamp_ms" in cols else "NULL"
+    hash_expr = "COALESCE(ac.source_md5, f.md5)" if "source_md5" in cols else "f.md5"
     rows = conn.execute(f"""
-        WITH dup_hashes AS (
-            SELECT f.md5, COUNT(DISTINCT ac.archive_path) AS total
-            FROM files f
-            JOIN archive_copies ac ON ac.original_path = f.original_path
-            WHERE f.md5 IS NOT NULL
-              AND length(f.md5) > 0
-              AND ac.archive_path NOT LIKE '%.thumbnails/%'
-            GROUP BY f.md5
-            HAVING total >= 2
+        WITH copies AS (
+            SELECT {hash_expr} AS md5, ac.archive_path, ac.is_hardlink,
+                   {ts_expr} AS timestamp_ms, ac.original_path
+            FROM archive_copies ac JOIN files f ON f.original_path=ac.original_path
+            WHERE ac.archive_path NOT LIKE '%.thumbnails/%'
+        ), dup_hashes AS (
+            SELECT md5, COUNT(DISTINCT archive_path) AS total FROM copies
+            WHERE length(md5) > 0 GROUP BY md5 HAVING total >= 2
         )
-        SELECT dh.md5, dh.total, ac.archive_path, MAX(ac.is_hardlink) AS is_hardlink, {ts_expr} AS timestamp_ms, MIN(f.original_path) AS orig_path
-        FROM dup_hashes dh
-        JOIN files f ON f.md5 = dh.md5
-        JOIN archive_copies ac ON ac.original_path = f.original_path
-        WHERE ac.archive_path NOT LIKE '%.thumbnails/%'
-        GROUP BY dh.md5, dh.total, ac.archive_path
-        ORDER BY dh.total DESC, dh.md5, ac.archive_path ASC
+        SELECT dh.md5, dh.total, c.archive_path, MAX(c.is_hardlink),
+               MIN(c.timestamp_ms), MIN(c.original_path)
+        FROM dup_hashes dh JOIN copies c ON c.md5=dh.md5
+        GROUP BY dh.md5, dh.total, c.archive_path
+        ORDER BY dh.total DESC, dh.md5, c.archive_path
     """).fetchall()
 
     if not rows:
@@ -641,7 +642,15 @@ def _route_group(
 
 
 def _route_contact(
-    sender, key_from_me, contacts, number_map, filename, year, output_root, contact_index
+    sender,
+    key_from_me,
+    contacts,
+    number_map,
+    filename,
+    year,
+    output_root,
+    contact_index,
+    verified_phones: set[str] | None = None,
 ) -> tuple[str, str]:
     """Resolve dest_dir and dest_filename for a 1-to-1 chat message. Mutates contact_index."""
     contact_number = number_map.get(sender, sender) if sender else "unknown"
@@ -650,6 +659,16 @@ def _route_contact(
         _, stored_display = contact_index[contact_number]
         contact_display = stored_display or None
     folder_name = build_contact_folder_name(contact_display or contact_number, contact_number)
+    if verified_phones is not None:
+        if contact_number in contact_index:
+            folder_name = contact_index[contact_number][0]
+        elif not contact_display:
+            # An unmapped LID can look like a telephone number.
+            folder_name = (
+                f"+{contact_number}"
+                if contact_number in verified_phones
+                else f"Contact ({sanitize_filename(contact_number)})"
+            )
     contact_index[contact_number] = (folder_name, contact_display or "")
     direction = "Sent" if key_from_me == 1 else "Received"
     dest_dir = os.path.join(output_root, "Contacts", folder_name, year, direction)
@@ -696,7 +715,7 @@ def _copy_or_skip(
                 cursor is not None
                 and cursor.execute(
                     "SELECT 1 FROM archive_copies ac JOIN files f ON f.original_path = ac.original_path "
-                    "WHERE ac.original_path = ? AND ac.archive_path = ? AND f.md5 = ?",
+                    "WHERE ac.original_path = ? AND ac.archive_path = ? AND ac.source_md5 = ?",
                     (file_path, rel, src_hash),
                 ).fetchone()
             ):
@@ -727,7 +746,7 @@ def _copy_or_skip(
             cursor is not None
             and cursor.execute(
                 "SELECT 1 FROM archive_copies ac JOIN files f ON f.original_path = ac.original_path "
-                "WHERE ac.original_path = ? AND ac.archive_path = ? AND f.md5 = ?",
+                "WHERE ac.original_path = ? AND ac.archive_path = ? AND ac.source_md5 = ?",
                 (file_path, rel, src_hash),
             ).fetchone()
         ):
@@ -845,6 +864,8 @@ def process_rows(
     hash_to_canonical: dict[bytes, str],
     exif_timestamps: bool = False,
     archived_file_set: set[tuple[str, str, bytes]] | None = None,
+    first_copy_names: dict[tuple[str, str], str] | None = None,
+    verified_phones: set[str] | None = None,
 ):
     stats = {
         "copied": 0,
@@ -920,8 +941,24 @@ def process_rows(
                 year,
                 output_root,
                 updated_index,
+                verified_phones,
             )
 
+        if first_copy_names is not None and file_path:
+            from wab_capture.versions import original_path
+
+            if (
+                filename in (".", "..")
+                or filename != os.path.basename(filename)
+                or "\\" in filename
+            ):
+                raise ValueError(f"Unsafe attachment filename: {filename!r}")
+            if not Path(dest_dir).resolve().is_relative_to(Path(output_root).resolve()):
+                raise ValueError("Unsafe archive destination")
+            directory = os.path.relpath(dest_dir, output_root).replace(os.sep, "/")
+            dest_filename = first_copy_names.setdefault(
+                (original_path(file_path), directory), dest_filename
+            )
         expected_dest_path = os.path.relpath(
             os.path.join(dest_dir, dest_filename), output_root
         ).replace(os.sep, "/")
@@ -1144,6 +1181,8 @@ def process_vcard_rows(
     dry_run: bool,
     conn: sqlite3.Connection | None,
     tz,
+    first_copy_names: dict[tuple[str, str], str] | None = None,
+    verified_phones: set[str] | None = None,
 ) -> tuple[dict, dict, dict]:
     """
     Extract vCard contacts to .vcf files in the archive output folder as regular media.
@@ -1224,13 +1263,19 @@ def process_vcard_rows(
                 year,
                 output_root,
                 updated_index,
+                verified_phones,
             )
 
+        virtual_orig_path = f"vcard:{msg_id}"
+        if first_copy_names is not None:
+            directory = os.path.relpath(dest_dir, output_root).replace(os.sep, "/")
+            dest_filename = first_copy_names.setdefault(
+                (virtual_orig_path, directory), dest_filename
+            )
         dest_path = os.path.join(dest_dir, dest_filename)
         vcard_bytes = vcard_text.strip().encode("utf-8") + b"\r\n"
         vcard_hash = hashing.bytes_md5(vcard_bytes)
         vcard_size = len(vcard_bytes)
-        virtual_orig_path = f"vcard:{msg_id}"
         if os.path.exists(dest_path):
             dest_path = find_identical_variant(dest_path, vcard_hash) or dest_path
 
@@ -1836,6 +1881,7 @@ _VALID_CONFIG_KEYS = {
     "staging",
     "link_duplicates",
     "preserve_deleted",
+    "stable_paths",
     "exif_timestamps",
 }
 
@@ -1863,6 +1909,7 @@ output     = "/path/to/archive"         # Destination folder for the archive (re
 # -----------------------------------------------------------------------------
 # Archiving Features & Filtering
 # -----------------------------------------------------------------------------
+# stable_paths = true                    # Keep existing archive paths across renames
 # preserve_deleted = true               # Preserve messages/chats deleted on phone or revoked by sender across runs
 # link_duplicates  = true               # Save disk space by hardlinking duplicate media across chats
 # exif_timestamps  = true               # Write WhatsApp message timestamps to media EXIF/metadata headers
@@ -2202,6 +2249,16 @@ def parse_args() -> argparse.Namespace:
         help="Only archive media from messages sent or received on or after this date (YYYY-MM-DD). Combines with --limit.",
     )
     archive_p.add_argument(
+        "--snapshot-manifest",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    archive_p.add_argument(
+        "--stable-paths",
+        action="store_true",
+        help="Keep existing contact and group directories and previously archived filenames.",
+    )
+    archive_p.add_argument(
         "--link-duplicates",
         action="store_true",
         dest="link_duplicates",
@@ -2422,7 +2479,6 @@ def decrypt_msgstore(
     """
     try:
         from wa_crypt_tools.lib.db.dbfactory import DatabaseFactory
-        from wa_crypt_tools.lib.key.keyfactory import KeyFactory
     except ImportError:
         logger.error(
             "wa-crypt-tools is required for decryption but is not installed.\n"
@@ -2430,22 +2486,13 @@ def decrypt_msgstore(
         )
         raise SystemExit(1)
 
-    key = KeyFactory.new(e2e_key)
-    if key is None and os.path.isfile(e2e_key):
-        try:
-            with open(e2e_key, encoding="utf-8") as f:
-                hex_candidate = f.read().strip()
-            if len(hex_candidate) == 64:
-                key = KeyFactory.new(hex_candidate)
-        except OSError:
-            pass
-
-    if key is None:
-        logger.error(
-            f"Could not load decryption key from: {e2e_key}\n"
-            "  Make sure --e2e-key points to a valid WhatsApp key file or 64-character hex key."
-        )
-        raise SystemExit(1)
+    try:
+        key = increment_merger.resolve_e2e_key(e2e_key, logger)
+        if key is None:
+            raise ValueError("Missing decryption key.")
+    except (ImportError, ValueError) as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
 
     logger.info("Decrypting msgstore...")
     try:
@@ -2766,6 +2813,9 @@ def _prepare_input(args: argparse.Namespace, since_ms: int | None, logger: loggi
         _zero_byte_count = [0]
 
         def _multi_root_resolver(fp):
+            if getattr(args, "stable_paths", False):
+                if any(p in ("", ".", "..") for p in fp.split("/")) or "\\" in fp or "\x00" in fp:
+                    raise ValueError(f"Unsafe media path: {fp!r}")
             rel_parts = fp.split("/")
             candidates = [
                 os.path.join(root, *rel_parts)
@@ -2967,6 +3017,13 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
             f"({(args.limit // 2) * 2} max total rows)."
         )
 
+    previous_group_ids = {}
+    previous_android = Path(args.output, "Whatsapp Databases", "msgstore.db")
+    if getattr(args, "stable_paths", False) and previous_android.is_file():
+        with contextlib.closing(
+            sqlite3.connect(previous_android.resolve().as_uri() + "?mode=ro", uri=True)
+        ) as previous:
+            previous_group_ids = archive_db.android_group_ids(previous)
     platform, media_resolver, ios_contacts_path, contacts = _prepare_input(args, since_ms, logger)
 
     logger.info(f"Connecting to: {args.msgstore}")
@@ -3028,6 +3085,36 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
             logger.info(
                 "Preserve-deleted: [DRY RUN] Skipping database preservation (0 messages preserved across 0 chats)."
             )
+
+    manifest = getattr(args, "snapshot_manifest", None)
+    if manifest:
+        from wab_capture.versions import bind_snapshot
+
+        work = Path(args.output).resolve()
+        database = Path(args.msgstore).resolve()
+        if (
+            platform != "android"
+            or args.dry_run
+            or not args.stable_paths
+            or not args.preserve_deleted
+            or len(args.wa_roots) != 1
+            or database != work / "Whatsapp Databases" / "msgstore.db"
+        ):
+            raise ValueError("Snapshot import requires a staged Android working database")
+        bindings = bind_snapshot(database, work, Path(args.wa_roots[0]), manifest, logger)
+        lookup = media_resolver
+
+        def media_resolver(fp):
+            if fp not in bindings:
+                return lookup(fp)
+            if bindings[fp] is None:
+                return None
+            lookup.root_hits[args.wa_roots[0]] += 1
+            return str(bindings[fp])
+
+        media_resolver.root_hits = lookup.root_hits
+        media_resolver.zero_byte_count = lookup.zero_byte_count
+        media_resolver.conflict_rows = lookup.conflict_rows
 
     with contextlib.closing(sqlite3.connect(args.msgstore)) as msgstore_conn:
         cursor = msgstore_conn.cursor()
@@ -3135,6 +3222,45 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
             group_index = archive_db.load_groups_from_db(archive_conn)
             logger.info(f"Group index loaded: {len(group_index)} known group(s).")
 
+            stable_paths = bool(getattr(args, "stable_paths", False))
+            first_copy_names = None
+            verified_phones = None
+            if stable_paths:
+                from shared.contact_history import meaningful_name
+
+                contacts = {
+                    number: name for number, name in contacts.items() if meaningful_name(name)
+                }
+                for number, (_, saved) in folder_index.items():
+                    if meaningful_name(saved):
+                        contacts.setdefault(number, saved)
+                first_copy_names = archive_db.load_first_copy_names(archive_conn)
+                verified_phones = set()
+                if platform == "android":
+                    if not args.dry_run:
+                        group_index = archive_db.stable_group_index(
+                            archive_conn,
+                            group_index,
+                            previous_group_ids,
+                            archive_db.android_group_ids(msgstore_conn),
+                            group_subjects,
+                            args.output,
+                        )
+                    columns = {r[1] for r in cursor.execute("PRAGMA table_info(jid)")}
+                    criteria = []
+                    if "server" in columns:
+                        criteria.append("server = 's.whatsapp.net'")
+                    if "raw_string" in columns:
+                        criteria.append("raw_string = user || '@s.whatsapp.net'")
+                    if criteria:
+                        rows = cursor.execute(
+                            "SELECT CAST(user AS TEXT) FROM jid WHERE " + " OR ".join(criteria)
+                        )
+                        verified_phones = {
+                            number
+                            for (number,) in rows
+                            if number and re.fullmatch(r"[1-9][0-9]{0,14}", number)
+                        }
             folder_index = archive_db.sync_folder_names(
                 contacts,
                 number_map,
@@ -3143,6 +3269,7 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                 logger,
                 conn=archive_conn if not args.dry_run else None,
                 dry_run=args.dry_run,
+                stable_paths=stable_paths,
             )
 
             group_index = archive_db.sync_group_names(
@@ -3152,6 +3279,7 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                 logger,
                 conn=archive_conn if not args.dry_run else None,
                 dry_run=args.dry_run,
+                stable_paths=stable_paths,
             )
 
             report_path = os.path.join(args.output, "missing_media_report.csv")
@@ -3187,6 +3315,8 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                 hash_to_canonical=hash_to_canonical,
                 exif_timestamps=bool(getattr(args, "exif_timestamps", False)),
                 archived_file_set=archived_file_set,
+                first_copy_names=first_copy_names,
+                verified_phones=verified_phones,
             )
 
             if vcard_query:
@@ -3204,6 +3334,8 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                         args.dry_run,
                         conn=archive_conn if not args.dry_run else None,
                         tz=tz,
+                        first_copy_names=first_copy_names,
+                        verified_phones=verified_phones,
                     )
                     stats["copied"] = stats.get("copied", 0) + v_stats.get("copied", 0)
                     stats["skipped"] = stats.get("skipped", 0) + v_stats.get("skipped", 0)
@@ -3237,6 +3369,9 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                         f"{link_thumb_stats['missing']} missing in backup source."
                     )
 
+            if manifest and stats["warnings"]:
+                raise OSError(f"Snapshot import failed on {stats['warnings']} file operations")
+
             if not args.dry_run:
                 archive_conn.commit()
                 archive_db.save_contacts_to_db(archive_conn, updated_index)
@@ -3248,6 +3383,17 @@ def run_forward_mode(args: argparse.Namespace, logger: logging.Logger):
                     f"{len(updated_group_index)} group(s)."
                 )
 
+            if manifest and missing_rows:
+                native_paths = {
+                    (mid, effective): source
+                    for mid, effective, source in cursor.execute(
+                        "SELECT message_id,effective_path,original_path FROM wab_media_bindings"
+                    )
+                }
+                for row in missing_rows:
+                    row["native_file_path"] = native_paths.get(
+                        (row["message_id"], row["file_path"]), ""
+                    )
             if not args.dry_run:
                 write_missing_report(report_path, missing_rows, logger)
             else:

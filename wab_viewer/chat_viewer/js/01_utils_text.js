@@ -40,6 +40,22 @@
     return Array.from(cleaned).slice(0, 2).join('').toUpperCase();
   }
 
+  function renderChatAvatar(element, chat) {
+    const key = chat.phone_number || chat.id || chat.display_name;
+    element.style.backgroundColor = getAvatarColor(key);
+    element.textContent = getInitials(chat.display_name);
+    if (!chat.avatar_digest) return;
+    const photo = document.createElement('img');
+    photo.className = 'local-profile-photo';
+    photo.loading = 'lazy';
+    photo.alt = '';
+    photo.addEventListener('error', () => {
+      if (photo.parentNode === element) element.textContent = getInitials(chat.display_name);
+    });
+    photo.src = API + '/avatars/' + encodeURIComponent(chat.avatar_digest);
+    element.replaceChildren(photo);
+  }
+
   function formatPhoneNumber(num) {
     if (!num) return '';
     const clean = String(num).trim();

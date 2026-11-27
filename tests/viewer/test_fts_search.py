@@ -534,8 +534,9 @@ class TestChatListSearchAndDescription:
         assert "makeSectionLabel('Chats')" in js
         # Subtitle logic contains Group chat fallback
         assert "'Group chat'" in js
-        # Subtitle logic formats contact phone number
-        assert "formatPhoneNumber(chat.phone_number || chat.id)" in js
+        # Search subtitles use the phone field. Internal IDs may be opaque LIDs or row IDs.
+        assert "formatPhoneNumber(chat.phone_number)" in js
+        assert "formatPhoneNumber(chat.phone_number || chat.id)" not in js
         # Client-side search filters include description and phone_number
         assert "c.description" in js
         assert "c.phone_number" in js
