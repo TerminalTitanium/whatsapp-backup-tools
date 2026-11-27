@@ -4,13 +4,11 @@
 
 ## Установить версию форка отдельно
 
-Нужны Git, Python 3.11+ и Android SDK Platform Tools с командой `adb`. В терминале Mac создайте отдельный checkout и окружение для форка. Пока изменения находятся в PR, используйте его ветку.
+Нужны Git, Python 3.11+ и Android SDK Platform Tools с командой `adb`. В терминале Mac создайте отдельный checkout и окружение для форка.
 
 ```sh
 git clone https://github.com/TerminalTitanium/whatsapp-backup-tools.git
 cd whatsapp-backup-tools
-git fetch origin refs/pull/1/head
-git switch --detach FETCH_HEAD
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .

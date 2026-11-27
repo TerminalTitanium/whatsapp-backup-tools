@@ -182,17 +182,15 @@ Everything is processed **100% locally on your computer** — no data leaves you
 
 ### Step 1: Install the Tool
 
-Install this fork from its GitHub checkout using Python 3.11+ in a virtual environment. The current snapshot workflow is available in [PR #1](https://github.com/TerminalTitanium/whatsapp-backup-tools/pull/1).
+Install this fork from its GitHub checkout using Python 3.11+ in a virtual environment.
 
 ```bash
 git clone https://github.com/TerminalTitanium/whatsapp-backup-tools.git
 cd whatsapp-backup-tools
-git fetch origin refs/pull/1/head
-git switch --detach FETCH_HEAD
 python -m pip install .
 ```
 
-The fetch and switch commands select the version under review. When installing from a checkout that already contains these changes, run just the last command. For a Mac walkthrough including virtual environment setup, see the [operator guide](docs/android-archive-quickstart.md). The [upstream project](https://github.com/auanasgheps/whatsapp-backup-tools) also distributes its releases on [PyPI](https://pypi.org/project/whatsapp-backup-tools/).
+For a Mac walkthrough including virtual environment setup, see the [operator guide](docs/android-archive-quickstart.md). The [upstream project](https://github.com/auanasgheps/whatsapp-backup-tools) also distributes its releases on [PyPI](https://pypi.org/project/whatsapp-backup-tools/).
 
 ---
 
