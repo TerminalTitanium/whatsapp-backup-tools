@@ -22,8 +22,9 @@ The installed commands are:
 
 - **`wab-archiver`** reads Android and iPhone backups and organizes their media.
 - **`wab-viewer`** opens the local archive viewer.
-- **`wab-capture`** takes per-account Android USB snapshots on macOS or Linux.
-- **`wab-import`** imports those snapshots into a working archive for each account on macOS or Linux.
+- **`wab-capture`** copies the databases, media and available contact data visible on an Android device to a dated local dump over USB. It runs on macOS or Linux.
+- **`wab-prepare`** lists dumped databases and prepares a selected full crypt15 backup for a named account.
+- **`wab-import`** imports prepared account snapshots into a working archive for each account on macOS or Linux.
 
 If you have a wheel built from the fork, you can install it with `python -m pip install /path/to/file.whl`. For offline installation, keep the required dependency wheels alongside it and add `--no-index --find-links /path/to/wheels`. The [upstream project on PyPI](https://pypi.org/project/whatsapp-backup-tools/) and its [GitHub releases](https://github.com/auanasgheps/whatsapp-backup-tools/releases) provide the original distribution.
 
@@ -45,10 +46,10 @@ When using manual execution, you must manually install required packages (`pip i
 ## 3. Platform-Specific Prerequisites
 
 - **Android Users**:
-  - Enable **End-to-End Encrypted Backup** in WhatsApp (`Settings → Chats → Chat Backup → End-to-end Encrypted Backup`) and save your 64-digit key.
-  - **ADB (Android Debug Bridge)**: Required if using automated USB extraction (`--from-adb` or `--pull-media`).
+  - To collect a raw device dump, connect an authorized USB device. To prepare a full crypt15 database for import, supply its 64-character hexadecimal end-to-end backup key.
+  - **ADB (Android Debug Bridge)**: Required if using USB extraction (`wab-capture`, `--from-adb` or `--pull-media`).
   - No root is required.
-  - Review the [Android Setup Guide](archiver/setup-android.md).
+  - Follow the [device dump and account preparation guide](android-archive-quickstart.md) or the [original Android archiver guide](archiver/setup-android.md).
 
 - **iOS Users**:
   - In-app WhatsApp E2E backup must be **disabled** before making a device backup.

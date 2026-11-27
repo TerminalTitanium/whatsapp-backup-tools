@@ -243,6 +243,8 @@ def capture_account(
     expected_files,
     session_id,
     confirm,
+    *,
+    raw_observation=None,
 ):
     from shared.contact_history import capture_avatars
 
@@ -250,7 +252,7 @@ def capture_account(
     account = check_account(request, primary.sha256, history)
     key = read_key(key_file, account, history, key_prompt)
     confirm(account)
-    captured = utc_now()
+    captured = raw_observation["captured_at"] if raw_observation is not None else utc_now()
     snapshot_id = timestamp_id(captured) + "_" + account
     database_dir = stage / "databases"
     database_dir.mkdir()
@@ -281,7 +283,10 @@ def capture_account(
         (stage / "contacts").mkdir()
         shutil.copyfile(contacts, stage / contact_file)
     avatars = capture_avatars(stage, avatar_map, account)
-    media, counts = sync_media(usb, device, stage)
+    if raw_observation is None:
+        media, counts = sync_media(usb, device, stage)
+    else:
+        media, counts = raw_observation["media"], raw_observation["media_counts"]
     if usb.databases() != expected_files:
         raise ValueError("The phone's backup changed during capture. Retry this account.")
     retained = merge_media_history(history, account, media)
@@ -303,6 +308,8 @@ def capture_account(
         "avatars": avatars,
         "media_counts": counts,
     }
+    if raw_observation is not None:
+        manifest["raw"] = raw_observation["raw"]
     write_json(stage / "manifest.json", manifest)
     dest = device / "snapshots" / snapshot_id
     stage.rename(dest)

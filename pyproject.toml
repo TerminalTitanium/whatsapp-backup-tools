@@ -1,6 +1,6 @@
 [project]
 name = "whatsapp-backup-tools"
-version = "0.80+fork.1"
+version = "0.80+fork.2"
 description = "Archive and browse your WhatsApp data offline. Archive media from Android and iOS backups into a structured folder hierarchy. View chats in a WebUI that mirrors WhatsApp Web."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,6 +56,7 @@ Upstream = "https://github.com/auanasgheps/whatsapp-backup-tools"
 
 [project.scripts]
 wab-capture = "wab_capture.cli:main"
+wab-prepare = "wab_capture.prepare:main"
 wab-import = "wab_capture.importer:main"
 wab-archiver = "wab_archiver.__main__:main"
 wab-viewer = "wab_viewer.__main__:main"

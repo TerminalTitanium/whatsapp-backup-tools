@@ -141,10 +141,7 @@ def build_map(
     }
 
 
-def capture_avatars(snapshot_dir: Path, map_path: Path | None, account_id: str) -> list[dict]:
-    """Copy account-matched avatar evidence into a snapshot under a digest-derived path."""
-    if not map_path:
-        return []
+def read_avatar_map(map_path: Path):
     map_path = Path(map_path).resolve(strict=True)
     spec = json.loads(map_path.read_text(encoding="utf-8"))
     root = map_path.parent
@@ -153,32 +150,46 @@ def capture_avatars(snapshot_dir: Path, map_path: Path | None, account_id: str) 
         spec = spec["entries"]
     if not isinstance(spec, list):
         raise ValueError("Avatar map must contain an entries list")
+    return root, spec
+
+
+def capture_avatar(snapshot_dir: Path, root: Path, row: dict):
+    """Verify and record one avatar supplied by a Mac observation map."""
+    jid = row["jid"]
+    if jid is not None and (not isinstance(jid, str) or not JID.fullmatch(jid)):
+        raise ValueError("Invalid WhatsApp JID in avatar map")
+    path = (root / row["file"]).resolve(strict=True)
+    if not path.is_relative_to(root):
+        raise ValueError("Avatar path outside map root")
+    data = path.read_bytes()
+    ext = image_extension(data)
+    if not ext:
+        raise ValueError("Unsupported avatar format (expected JPEG, PNG, or WebP)")
+    sha = hashlib.sha256(data).hexdigest()
+    if row.get("sha256", sha) != sha:
+        raise ValueError("Avatar bytes changed since the Mac map was generated")
+    rel = f"avatars/{sha}.{ext}"
+    destination = snapshot_dir / rel
+    destination.parent.mkdir(exist_ok=True)
+    if not destination.exists():
+        destination.write_bytes(data)
+    return {"jid": jid, "path": rel, "sha256": sha, "source": "mac"}
+
+
+def capture_avatars(snapshot_dir: Path, map_path: Path | None, account_id: str) -> list[dict]:
+    """Copy account-matched avatar evidence into a snapshot under a digest-derived path."""
+    if not map_path:
+        return []
+    root, rows = read_avatar_map(map_path)
     entries = []
     assigned = {}
-    for row in spec:
-        if row["account_id"] != account_id:
-            continue
-        jid = row["jid"]
-        if jid is not None and (not isinstance(jid, str) or not JID.fullmatch(jid)):
-            raise ValueError("Invalid WhatsApp JID in avatar map")
-        path = (root / row["file"]).resolve(strict=True)
-        if not path.is_relative_to(root):
-            raise ValueError("Avatar path outside map root")
-        data = path.read_bytes()
-        ext = image_extension(data)
-        if not ext:
-            raise ValueError("Unsupported avatar format (expected JPEG, PNG, or WebP)")
-        digest = hashlib.sha256(data).hexdigest()
-        if row.get("sha256", digest) != digest:
-            raise ValueError("Avatar bytes changed since the Mac map was generated")
-        if jid and assigned.setdefault(jid, digest) != digest:
-            raise ValueError("Conflicting avatar assignment for the same account and JID")
-        rel = f"avatars/{digest}.{ext}"
-        destination = snapshot_dir / rel
-        destination.parent.mkdir(exist_ok=True)
-        if not destination.exists():
-            destination.write_bytes(data)
-        entries.append({"jid": jid, "path": rel, "sha256": digest, "source": "mac"})
+    for row in rows:
+        if row["account_id"] == account_id:
+            item = capture_avatar(snapshot_dir, root, row)
+            jid, sha = item["jid"], item["sha256"]
+            if jid and assigned.setdefault(jid, sha) != sha:
+                raise ValueError("Conflicting avatar assignment for the same account and JID")
+            entries.append(item)
     return entries
 
 

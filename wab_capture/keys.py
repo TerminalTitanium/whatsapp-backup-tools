@@ -1,8 +1,11 @@
-"""Authenticate a local .crypt15 backup without persisting any decrypted bytes."""
+"""Stream authenticated crypt15 backups for verification and private local inspection."""
 
 import hashlib
+import os
 import zlib
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from Cryptodome.Cipher import AES
 from wa_crypt_tools.lib.db.db15 import Database15
@@ -19,19 +22,25 @@ def _plaintext_chunks(path: Path, key_hex: str):
         raise ValueError("A crypt15 key must contain 64 hexadecimal characters.") from None
 
     with path.open("rb") as stream:
-        db = DatabaseFactory.from_file(stream)
+        size = os.fstat(stream.fileno()).st_size
+        if size < 32:
+            raise ValueError(f"Truncated crypt15 backup: {path.name}")
+        try:
+            db = DatabaseFactory.from_file(stream)
+        except IndexError:
+            raise ValueError(f"Invalid crypt15 header: {path.name}") from None
         if not isinstance(db, Database15):
             raise ValueError("Capture requires a crypt15 backup with an E2E key.")
         cipher = AES.new(Key15(key=key).get(), AES.MODE_GCM, nonce=db.get_iv())
         # DatabaseFactory positioned the stream after the header and seeded the
         # WhatsApp footer checksum. The payload ends with TAG[, MD5].
-        remaining = path.stat().st_size - stream.tell() - 32
+        remaining = size - stream.tell() - 32
         if remaining < 0:
-            raise ValueError("Truncated crypt15 backup.")
+            raise ValueError(f"Truncated crypt15 backup: {path.name}")
         while remaining:
             data = stream.read(min(remaining, 1024 * 1024))
             if not data:
-                raise ValueError("Truncated crypt15 backup.")
+                raise ValueError(f"Truncated crypt15 backup: {path.name}")
             db.file_hash.update(data)
             yield cipher.decrypt(data)
             remaining -= len(data)
@@ -48,17 +57,14 @@ def _plaintext_chunks(path: Path, key_hex: str):
             raise ValueError(f"Wrong key or corrupt backup: {path.name}") from None
 
 
-def verify_key(path: Path, key_hex: str, *, fingerprint=False):
-    """Exhaust the iterator to verify GCM; only publish a digest after verification."""
+def _consume_sqlite(path, key_hex, output=None):
+    """Optionally stream plaintext to a private file; return only after GCM verification."""
     hasher = hashlib.sha256()
     header = bytearray()
     unpack = None
     first = True
     for chunk in _plaintext_chunks(path, key_hex):
-        if not fingerprint:
-            continue
         if first:
-            # Whole Android backups are either SQLite or zlib-compressed SQLite.
             if not chunk.startswith(b"S"):
                 unpack = zlib.decompressobj()
             first = False
@@ -71,9 +77,28 @@ def verify_key(path: Path, key_hex: str, *, fingerprint=False):
             if len(header) < 16:
                 header.extend(block[: 16 - len(header)])
             hasher.update(block)
+            if output is not None:
+                output.write(block)
             pending = unpack.unconsumed_tail if unpack else b""
+    if header != b"SQLite format 3\x00" or (unpack and not unpack.eof):
+        raise ValueError("The full backup does not contain a complete SQLite database payload.")
+    return hasher.hexdigest()
+
+
+def verify_key(path: Path, key_hex: str, *, fingerprint=False):
+    """Exhaust the iterator to verify GCM; only publish a digest after verification."""
     if fingerprint:
-        if header != b"SQLite format 3\x00" or (unpack and not unpack.eof):
-            raise ValueError("The full backup does not contain a complete SQLite database payload.")
-        return hasher.hexdigest()
+        return _consume_sqlite(path, key_hex)
+    for _ in _plaintext_chunks(path, key_hex):
+        pass
     return None
+
+
+@contextmanager
+def authenticated_sqlite(path: Path, key_hex: str):
+    """Yield a temporary standalone database only once the full backup authenticates."""
+    with TemporaryDirectory(prefix="wab-evidence-") as directory:
+        plaintext = Path(directory) / "candidate.sqlite"
+        with plaintext.open("xb") as target:
+            _consume_sqlite(path, key_hex, target)
+        yield plaintext

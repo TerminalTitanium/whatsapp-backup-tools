@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -19,6 +20,11 @@ _ROOTS = (
     f"{_STORAGE}/WhatsApp",
     f"{_STORAGE}/Android/media/com.whatsapp.w4b/WhatsApp Business",
     f"{_STORAGE}/WhatsApp Business",
+)
+_PACKAGE_ROOTS = (
+    f"{_STORAGE}/Android/media/com.whatsapp",
+    f"{_STORAGE}/Android/media/com.whatsapp.w4b",
+    *_ROOTS,
 )
 _FULL = re.compile(r"Databases/msgstore\.db\.(crypt1[45])")
 _INCREMENT = re.compile(r"Databases/msgstore-increment-(\d+)[^/]*\.(crypt1[45])")
@@ -87,10 +93,34 @@ def _inventory(raw: bytes, directory: str) -> list[RemoteFile]:
     return sorted(files, key=lambda f: f.path)
 
 
+def _roots(paths):
+    roots = set()
+    for path in paths:
+        if not path.startswith("/") or ".." in PurePosixPath(path).parts or "\0" in path:
+            raise ValueError("Android root must be an absolute directory.")
+        roots.add(PurePosixPath(path))
+    return [str(p) for p in sorted(roots) if roots.isdisjoint(p.parents)]
+
+
+def active_databases(records):
+    by_path = {f.path: f for f in records}
+    full = [f for f in records if _FULL.fullmatch(f.path)]
+    if len(full) != 1 or not full[0].size:
+        raise ValueError("Expected exactly one nonempty active full WhatsApp database.")
+    suffix = PurePosixPath(full[0].path).suffix
+    incs = [f.path for f in records if _INCREMENT.fullmatch(f.path) and f.path.endswith(suffix)]
+    active = filter_active_increments(incs, full[0].path)
+    for index, name in enumerate(active, start=1):
+        match = _INCREMENT.fullmatch(name)
+        if match is None or int(match[1]) != index or not by_path[name].size:
+            raise ValueError("Incomplete Android incremental backup sequence. Retry after backup.")
+    return [full[0], *(by_path[name] for name in active)]
+
+
 class AndroidDevice:
     """Pin all reads in this session to a single authorized ADB serial and root."""
 
-    def __init__(self, serial: str | None = None, root: str | None = None):
+    def __init__(self, serial=None, root=None, raw=False):
         selector = ["-s", serial] if serial else ["-d"]
         self.serial = _adb([*selector, "get-serialno"], 30).decode().strip()
         if not self.serial or self.serial in {"unknown", "offline"}:
@@ -99,12 +129,12 @@ class AndroidDevice:
             )
         if serial and self.serial != serial:
             raise RuntimeError("ADB returned a different serial than requested.")
-        if root is not None:
-            if not root.startswith("/") or ".." in PurePosixPath(root).parts or "\0" in root:
-                raise ValueError("Android root must be an absolute directory.")
-            roots = [str(PurePosixPath(root))]
-        else:
-            roots = list(_ROOTS)
+        roots = _roots(
+            ([root] if isinstance(root, str) else root) or (_PACKAGE_ROOTS if raw else _ROOTS)
+        )
+        self.search_roots = roots
+        if raw:
+            return
         command = (
             f"for dir in {shlex.join(roots)}; do "
             'if [ -f "$dir/Databases/msgstore.db.crypt15" ] || '
@@ -121,6 +151,37 @@ class AndroidDevice:
             raise ValueError("No full WhatsApp backup found. Back up the active account first.")
         self.root = found[0]
 
+    def discover_dirs(self):
+        """Discover storage directories while pruning media and known database trees."""
+        command = (
+            f"for dir in {shlex.join(self.search_roots)}; do "
+            'if [ -d "$dir" ]; then find "$dir" -type d '
+            r"\( -name Databases -o -name Media \) -prune -print0 || exit 1; fi; done"
+        )
+        raw = self._shell(command, 300).split(b"\0")
+        if raw.pop():
+            raise ValueError("Incomplete Android directory inventory.")
+        found = set()
+        for field in raw:
+            name = field.decode("utf-8")
+            path = PurePosixPath(name)
+            if (
+                str(path) != name
+                or ".." in path.parts
+                or path.name not in {"Media", "Databases"}
+                or not any(path.is_relative_to(r) for r in self.search_roots)
+            ):
+                raise ValueError("Invalid Android storage directory.")
+            found.add(path)
+        return tuple(
+            sorted(str(p) for p in found if p.name == kind) for kind in ("Databases", "Media")
+        )
+
+    def at_root(self, parent):
+        view = copy(self)
+        view.root = parent
+        return view
+
     def _shell(self, command: str, timeout: int) -> bytes:
         # A non-PTY shell preserves NUL framing and reports remote command failure.
         return _adb(["-s", self.serial, "shell", "-T", command], timeout)
@@ -135,25 +196,15 @@ class AndroidDevice:
     def media(self) -> list[RemoteFile]:
         return self._scan("Media", "")
 
+    def all_databases(self) -> list[RemoteFile]:
+        return self._scan("Databases", "")
+
     def databases(self) -> list[RemoteFile]:
         records = self._scan(
             "Databases",
             r"-maxdepth 1 \( -name 'msgstore.db.crypt1[45]' -o -name 'msgstore-increment-*.crypt1[45]' \)",
         )
-        by_path = {f.path: f for f in records}
-        full = [f for f in records if _FULL.fullmatch(f.path)]
-        if len(full) != 1 or not full[0].size:
-            raise ValueError("Expected exactly one nonempty active full WhatsApp database.")
-        suffix = PurePosixPath(full[0].path).suffix
-        incs = [f.path for f in records if _INCREMENT.fullmatch(f.path) and f.path.endswith(suffix)]
-        active = filter_active_increments(incs, full[0].path)
-        for index, name in enumerate(active, start=1):
-            match = _INCREMENT.fullmatch(name)
-            if match is None or int(match[1]) != index or not by_path[name].size:
-                raise ValueError(
-                    "Incomplete Android incremental backup sequence. Retry after backup."
-                )
-        return [full[0], *(by_path[name] for name in active)]
+        return active_databases(records)
 
     def contacts(self, destination: Path) -> int:
         """Write a complete, nonempty phone/WhatsApp contact export or leave the target untouched."""

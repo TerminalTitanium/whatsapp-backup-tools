@@ -37,14 +37,14 @@ WhatsApp Backup Tools keeps source snapshots by device and working archives by W
 
 | Source | Available today | Planned for the snapshot workflow |
 | --- | --- | --- |
-| Android phone | Capture one or more accounts over USB and import their snapshots. [Operator guide](docs/android-archive-quickstart.md) | |
+| Android phone | Capture the visible WhatsApp backup files and media in one USB session. Select each account’s database on the computer before import. [Operator guide](docs/android-archive-quickstart.md) | |
 | WhatsApp for Mac | Add local avatars and recover missing attachments. [Avatars](docs/mac-avatar-map.md) · [Media recovery](docs/android-media-recovery.md) | Capture chats directly from the Mac app. |
 | iPhone | Read a local iPhone backup with the existing archiver. [iPhone guide](docs/archiver/setup-ios.md) | Capture and import iPhone snapshots into account archives. |
 
 ## Overview
 
 WhatsApp Backup Tools is a suite to archive and access your WhatsApp data.
-Its two core programs handle archiving and viewing. The fork also provides `wab-capture` and `wab-import` for the snapshot workflow described above.
+Its two core programs handle archiving and viewing. The fork also provides `wab-capture`, `wab-prepare` and `wab-import` for the snapshot workflow described above.
 
 - **wab-archiver** (WhatsApp Backup Archiver) organises your WhatsApp media into a structured folder hierarchy using metadata from the WhatsApp database. Instead of an unstructured dump, you get a browsable archive sorted by contact or group, year, and direction (Sent/Received), with original message timestamps preserved.
 - **wab-viewer** (WhatsApp Backup Viewer) lets you browse and search your archived chats through a local web UI, replicating WhatsApp Web. 
@@ -196,7 +196,7 @@ For a Mac walkthrough including virtual environment setup, see the [operator gui
 
 ### Step 2: Get the Files from Your Phone
 
-Choose your platform for a step-by-step extraction walkthrough:
+For a device dump on Android, start with the [Android snapshot guide](docs/android-archive-quickstart.md). Encrypted files can be copied over USB before you have a key. For the original archiver workflow, use the platform guides below.
 
 | 🤖 Android | 🍏 iOS / iPhone |
 | :--- | :--- |

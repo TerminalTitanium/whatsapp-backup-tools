@@ -264,6 +264,11 @@ def import_snapshot(snapshot, *, adopt=None, metadata_only=False, repair=None):
     snap = Path(snapshot).resolve(strict=True)
     if snap.parent.name != "snapshots" or snap.parent.parent.parent.name != "sources":
         raise ValueError("Select a snapshot under sources/<device>/snapshots/.")
+    if (snap / "raw-manifest.json").is_file():
+        raise ValueError(
+            "This is a device capture. Run wab-prepare on it to select an account database, "
+            "then pass the resulting account snapshot to wab-import."
+        )
     data = json.loads(inside(snap, "manifest.json").read_text(encoding="utf-8"))
     if data["schema_version"] != 1 or snap.name != data["snapshot_id"]:
         raise ValueError("Incomplete or unsupported snapshot.")

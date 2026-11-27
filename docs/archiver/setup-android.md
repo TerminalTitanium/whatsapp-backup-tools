@@ -4,7 +4,7 @@
 
 ## WhatsApp E2E Encrypted Backup
 
-Before pulling the database from a non-rooted device, **End-to-end encrypted backup must be enabled** in WhatsApp. This generates the cryptographic key required for decryption.
+To collect the encrypted files already visible on a phone, follow the [USB device dump guide](android-snapshots.md). Capture can finish before you have a key. To create a fresh crypt15 backup for decryption and import, enable **end-to-end encrypted backup** in WhatsApp and retain its key.
 
 On your phone, navigate to:
 

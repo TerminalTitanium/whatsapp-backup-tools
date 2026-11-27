@@ -50,6 +50,16 @@ class Phone:
     def media(self):
         return self.records("Media/")
 
+    def discover_dirs(self):
+        return (["/sdcard/WhatsApp/Databases"], ["/sdcard/WhatsApp/Media"])
+
+    def at_root(self, root):
+        assert root == "/sdcard/WhatsApp"
+        return self
+
+    def all_databases(self):
+        return self.databases()
+
     def databases(self):
         return self.records("Databases/")
 

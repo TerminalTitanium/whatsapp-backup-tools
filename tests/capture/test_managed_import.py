@@ -26,6 +26,16 @@ def file_record(path):
     return {"size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+@HOST
+def test_raw_capture_directs_operator_to_account_preparation(tmp_path):
+    snap = tmp_path / "sources" / "phone" / "snapshots" / "device-capture"
+    snap.mkdir(parents=True)
+    write_json(snap / "raw-manifest.json", {"kind": "android-device-raw"})
+    with pytest.raises(ValueError, match="wab-prepare"):
+        importer.import_snapshot(snap)
+    assert not (tmp_path / "wab").exists()
+
+
 @pytest.fixture
 def tree(tmp_path):
     device = tmp_path / "sources" / "phone"
