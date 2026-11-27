@@ -52,7 +52,7 @@ elif args[:1] == ['pull']:
     shutil.copyfile(args[1], args[2])
 elif args[:2] == ['shell', '-T']:
     cmd = args[2]
-    if 'find Databases ' in cmd and os.environ.get('TEST_SWITCH_DB'):
+    if 'find Databases/' in cmd and os.environ.get('TEST_SWITCH_DB'):
         target = pathlib.Path(os.environ['TEST_SWITCH_DB'])
         counter = target.with_suffix('.count')
         n = int(counter.read_text()) + 1 if counter.exists() else 1

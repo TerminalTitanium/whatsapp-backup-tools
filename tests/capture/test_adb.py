@@ -160,3 +160,29 @@ def test_adb_reports_transport_failure(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="unauthorized"):
         adb._adb(["devices"], 5)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="The device inventory requires Android/Linux stat."
+)
+def test_explicit_database_directory_and_missing_root(monkeypatch, tmp_path):
+    real = tmp_path / "backups"
+    real.mkdir()
+    (real / "saved.crypt15").write_bytes(b"db")
+    directory = tmp_path / "Databases"
+    directory.symlink_to(real, target_is_directory=True)
+    (tmp_path / "Media").mkdir()
+
+    def local_shell(args, timeout):
+        if args[-1] == "get-serialno":
+            return b"test\n"
+        return subprocess.check_output(["sh", "-c", args[-1]], timeout=timeout)
+
+    monkeypatch.setattr(adb, "_adb", local_shell)
+    device = adb.AndroidDevice(root=str(directory), raw=True)
+    assert device.discover_dirs() == ([str(directory)], [])
+    records = device.at_root(str(tmp_path)).all_databases()
+    assert [r.path for r in records] == ["Databases/saved.crypt15"]
+    directory.unlink()
+    with pytest.raises(subprocess.CalledProcessError):
+        device.discover_dirs()

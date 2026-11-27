@@ -155,8 +155,10 @@ class AndroidDevice:
         """Discover storage directories while pruning media and known database trees."""
         command = (
             f"for dir in {shlex.join(self.search_roots)}; do "
+            'case "${dir##*/}" in Databases|Media) '
+            r"""(cd "$dir") || exit 1; printf '%s\000' "$dir"; continue;; esac; """
             'if [ -d "$dir" ]; then find "$dir" -type d '
-            r"\( -name Databases -o -name Media \) -prune -print0 || exit 1; fi; done"
+            r"\( -name Databases -o -name Media \) -print0 -prune || exit 1; fi; done"
         )
         raw = self._shell(command, 300).split(b"\0")
         if raw.pop():
@@ -188,7 +190,7 @@ class AndroidDevice:
 
     def _scan(self, directory: str, predicates: str) -> list[RemoteFile]:
         script = (
-            f"cd {shlex.quote(self.root)} && find {directory} {predicates} "
+            f"cd {shlex.quote(self.root)} && find {directory}/ {predicates} "
             f"-type f -exec sh -c {shlex.quote(_HASH_FILES)} sh {{}} +"
         )
         return _inventory(self._shell(script, 6 * 3600), directory)
